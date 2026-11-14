@@ -55,6 +55,7 @@ jobs:
           echo "$HOME/.wasmer/bin" >> "$GITHUB_PATH"
           curl --fail --silent --show-error --location https://github.com/WebAssembly/wasi-sdk/releases/download/wasi-sdk-34/wasi-sdk-34.0-x86_64-linux.tar.gz -o "$RUNNER_TEMP/wasi-sdk.tar.gz"
           tar -xzf "$RUNNER_TEMP/wasi-sdk.tar.gz" -C "$RUNNER_TEMP"
+          echo "$RUNNER_TEMP/wasi-sdk-34.0-x86_64-linux/bin" >> "$GITHUB_PATH"
           echo "CC_wasm32_wasmer_wasi=$RUNNER_TEMP/wasi-sdk-34.0-x86_64-linux/bin/clang" >> "$GITHUB_ENV"
       - run: python3 scripts/build_wasix.py --features mysql-backend
       - run: python3 tests/mcp_smoke.py --wasmer dist/minimal-mcp-agent.wasm
