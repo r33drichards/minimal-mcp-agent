@@ -6,6 +6,7 @@ import os
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 import subprocess
 import threading
+import sys
 
 seen = []
 
@@ -21,6 +22,8 @@ class MCP(BaseHTTPRequestHandler):
         self.end_headers()
 
     def do_POST(self):
+        assert self.headers.get('Authorization') == 'Bearer local-test-credential'
+        assert self.headers.get('X-MCP-Session-Id') == 'test-session'
         request = json.loads(self.rfile.read(int(self.headers['Content-Length'])))
         method = request['method']
         seen.append(method)
@@ -53,14 +56,18 @@ class MCP(BaseHTTPRequestHandler):
 server = ThreadingHTTPServer(('127.0.0.1', 0), MCP)
 threading.Thread(target=server.serve_forever, daemon=True).start()
 env = dict(os.environ, MCP_URL=f'http://127.0.0.1:{server.server_port}/mcp')
-env.pop('MCP_TOKEN', None)
+env['MCP_TOKEN'] = 'local-test-credential'
+env['MCP_SESSION_ID'] = 'test-session'
 env.pop('MCP_SERVERS_JSON', None)
 try:
-    result = subprocess.run(['target/debug/minimal-mcp-agent', 'tools'], env=env,
+    command = ['target/debug/minimal-mcp-agent', 'tools']
+    if len(sys.argv) == 3 and sys.argv[1] == '--wasmer':
+        command = [os.environ.get('WASMER_BIN', 'wasmer'), 'run', sys.argv[2], '--net', '--env', 'MCP_URL='+env['MCP_URL'], '--env', 'MCP_TOKEN='+env['MCP_TOKEN'], '--env', 'MCP_SESSION_ID='+env['MCP_SESSION_ID'], '--', 'tools']
+    result = subprocess.run(command, env=env,
                             capture_output=True, text=True, timeout=45, check=True)
     assert result.stdout.splitlines() == ['first', 'second'], result.stdout
     assert seen.count('tools/list') == 2, seen
     assert 'initialize' in seen, seen
-    print('PASS: local HTTP connection, legacy fallback, and paginated MCP discovery')
+    print('PASS: exact bearer header, local HTTP connection, legacy fallback, and paginated MCP discovery')
 finally:
     server.shutdown()

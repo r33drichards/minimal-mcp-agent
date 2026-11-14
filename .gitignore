@@ -3,3 +3,6 @@
 .env.*
 *.token
 .DS_Store
+
+/.wasix-build/
+/dist/

@@ -164,3 +164,47 @@ and real model inference require your own browser sign-in and eligible plan.
 - [Sign in with ChatGPT: registration](https://developers.openai.com/siwc/token-sharing-open-source/sign-in)
 - [ChatGPT plan models and inference](https://developers.openai.com/siwc/token-sharing-open-source/models-and-inference)
 - [Official Rust MCP SDK](https://github.com/modelcontextprotocol/rust-sdk)
+
+## mcp-js
+
+Point `MCP_URL` at mcp-js's Streamable HTTP **`/mcp`** endpoint, not its REST
+`/api/exec` endpoint. If mcp-js has `JWKS_URL` configured, use `MCP_TOKEN` for a
+JWT from that issuer. The runner sends exactly one `Authorization: Bearer`
+prefix; mcp-js verifies requests against its configured JWKS. mcp-js itself is
+not the OAuth token issuer, so obtain/refresh the token with your identity provider.
+
+For a stateful JS heap/filesystem, set `MCP_SESSION_ID`. It becomes the
+`X-MCP-Session-Id` header, distinct from the MCP protocol's transport session.
+With multiple servers, use `session_id_env` beside `token_env` in each
+`MCP_SERVERS_JSON` entry. A configured logical session is shared by this runner's
+turns; run separate instances/session IDs when you need isolated workspaces.
+
+See [WASIX build and deployment](BUILD.md) and [durable hooks](docs/durability.md).
+The durable API is opt-in: the reference MemoryBackend demonstrates ordering,
+not crash-persistent storage. The CLI and hosted HTTP handler still use the
+ordinary ephemeral loop by default; opt into the MySQL HTTP adapter below.
+
+### Durable hosted MySQL mode (opt-in)
+
+Build with `cargo build --release --features mysql-backend`. Configure the verified
+TLS database settings in [MYSQL_BACKEND.md](MYSQL_BACKEND.md), run
+`minimal-mcp-agent migrate` once to install the schema, then set
+`DURABLE_BACKEND=mysql` and run `minimal-mcp-agent serve`.
+
+Durable `POST /turn` requests use server-owned history:
+
+```json
+{"session_id":"project-123","request_id":"turn-001","input":"Inspect the project"}
+```
+
+Both IDs must be 1–128 ASCII letters/digits/`_`/`-`. Reuse the same request ID and
+input to resume or retrieve its completed result; use a new request ID for the
+next turn in that session. Do not send a `messages` array in this mode. A request
+that was interrupted during a tool side effect stops as unknown rather than
+repeating that tool. Session locks reject competing owners. Never blindly retry
+a failed request under a new ID.
+
+`DURABLE_BACKEND=ephemeral` (the default) preserves the original HTTP `messages`
+contract. Interactive CLI history remains ephemeral. Backend credentials belong
+in secret environment variables, never source control. Database migrations are
+explicit and are not silently run on HTTP startup.

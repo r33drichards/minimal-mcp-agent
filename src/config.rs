@@ -9,6 +9,8 @@ pub struct McpServer {
     pub url: String,
     /// Name of an environment variable containing this server's OAuth access token.
     pub token_env: Option<String>,
+    /// Optional mcp-js logical session, separate from MCP transport session IDs.
+    pub session_id_env: Option<String>,
 }
 
 pub fn mcp_servers() -> Result<Vec<McpServer>> {
@@ -19,6 +21,7 @@ pub fn mcp_servers() -> Result<Vec<McpServer>> {
             name: "default".into(),
             url: env::var("MCP_URL").context("Set MCP_SERVERS_JSON or MCP_URL")?,
             token_env: env::var_os("MCP_TOKEN").map(|_| "MCP_TOKEN".into()),
+            session_id_env: env::var_os("MCP_SESSION_ID").map(|_| "MCP_SESSION_ID".into()),
         }]
     };
     validate(&servers)?;
@@ -57,7 +60,10 @@ fn validate(servers: &[McpServer]) -> Result<()> {
                 && url.fragment().is_none(),
             "MCP URLs must not contain credentials, query strings, or fragments"
         );
-        if let Some(name) = &server.token_env {
+        for name in [&server.token_env, &server.session_id_env]
+            .into_iter()
+            .flatten()
+        {
             ensure!(
                 !name.is_empty() && name.bytes().all(|c| c.is_ascii_alphanumeric() || c == b'_'),
                 "Invalid MCP token environment variable name"
@@ -78,7 +84,7 @@ pub fn bearer(server: &McpServer) -> Result<Option<String>> {
                 !value.trim().is_empty() && !value.contains(['\r', '\n']),
                 "Invalid MCP access token"
             );
-            Ok(format!("Bearer {value}"))
+            Ok(value)
         })
         .transpose()
 }
