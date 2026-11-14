@@ -2,7 +2,7 @@
 
 A small Rust terminal agent: **read input → ask the model → run MCP tools → repeat**.
 The agent loop is in [`src/agent.rs`](src/agent.rs). No agent framework, database,
-local Rust tool registry, or Codex subprocess. Tools come from one MCP server.
+local Rust tool registry, or Codex subprocess. Tools come from configured MCP servers.
 
 ## Run
 
@@ -34,6 +34,56 @@ Tool invocations execute automatically, with no per-call approval or human-in-th
 step. Each call logs its name and arguments. `/quit` or EOF exits between turns.
 Conversation history is in memory only; starting a new process starts a new conversation.
 
+## Multiple OAuth-protected HTTP MCP servers
+
+Configure endpoint names and **environment variable names**, never inline tokens:
+
+```sh
+export MCP_SERVERS_JSON='[{"name":"search","url":"https://search.example/mcp","token_env":"SEARCH_MCP_ACCESS_TOKEN"},{"name":"code","url":"https://code.example/mcp","token_env":"CODE_MCP_ACCESS_TOKEN"}]'
+# Set SEARCH_MCP_ACCESS_TOKEN and CODE_MCP_ACCESS_TOKEN via your host's secret store.
+cargo run --locked -- tools
+```
+
+An OAuth access token is used as a bearer credential. Obtain it through each MCP
+provider's supported authorization flow. This is **not** automatic OAuth login,
+dynamic client registration, client-credentials exchange, or token refresh.
+Expired credentials fail closed; rotate secrets and restart. Token env references
+are isolated per server; ChatGPT credentials are never reused for MCP authentication.
+`MCP_SERVERS_JSON` takes precedence over the single-server `MCP_URL`/`MCP_TOKEN` form.
+
+## Hosted HTTP mode
+
+```sh
+export OPENAI_MODEL='<model-slug>'
+export MCP_URL='https://your-server.example/mcp'
+# Set these through the deployment platform's encrypted secrets UI:
+# CHATGPT_ACCESS_TOKEN: an OAuth access token issued by this app's official direct SIWC flow
+# RUNNER_API_TOKEN: a separate random secret at least 32 characters long
+export PORT=8080
+cargo run --locked -- serve
+```
+
+`serve` binds `0.0.0.0:$PORT`. `GET /health` is public. `POST /turn` requires
+`Authorization: Bearer <RUNNER_API_TOKEN>` and JSON:
+
+```json
+{"input":"Your request", "messages":[]}
+```
+
+The response contains `messages`; send that array back with the next input to
+continue the conversation. No transcript is shared between requests. Requests
+are sequential, bodies are capped at 1 MiB, and model/tool timeouts plus the
+20-round limit still apply. A failure may follow completed tool actions; the
+response includes partial history, and **clients must not automatically retry**.
+Serve behind HTTPS. The runner secret grants autonomous use of all configured
+MCP tools, so share it only with trusted callers. There is no built-in rate limiter.
+
+`CHATGPT_ACCESS_TOKEN` overrides local account storage for noninteractive runs.
+It is a short-lived OAuth credential, **not** an API key or a Codex auth file.
+It is not refreshed automatically in env-token mode. Provision and rotate it with
+your host's supported secret mechanism; never commit it or bake it into an image.
+The interactive `login` flow remains a local CLI feature, not a public HTTP endpoint.
+
 ## The loop
 
 ```text
@@ -64,8 +114,8 @@ The round limit stops runaway loops after completing the pending result batch.
 
 The official `rmcp` SDK handles Streamable HTTP/SSE, modern protocol discovery,
 legacy initialization fallback, and paginated tool discovery. This starter does
-not launch stdio servers or implement MCP OAuth; use `MCP_URL` plus an optional
-`MCP_TOKEN`. Old two-endpoint HTTP+SSE servers are not supported. Tool schemas are
+not launch stdio servers or run MCP OAuth browser/refresh flows; supply already-issued
+OAuth access tokens through secret environment variables. Old two-endpoint HTTP+SSE servers are not supported. Tool schemas are
 loaded at startup; restart after a server's tools change. MCP prompts/resources
 are not loaded automatically.
 
@@ -82,7 +132,7 @@ version buffers a completed response instead of rendering token-by-token.
 
 - Connect only to MCP servers you trust. Their tool descriptions and results go
   to the selected model, and their tools may perform real external actions.
-- `MCP_TOKEN` is sent **only** to `MCP_URL`; the ChatGPT credential is sent only to
+- Each MCP access token is sent **only** to its configured server; the ChatGPT credential is sent only to
   official OpenAI auth/API endpoints. Credential-bearing redirects are disabled.
 - MCP HTTP is allowed only on loopback; use HTTPS for remote servers.
 - OAuth uses PKCE, fresh state/nonce, and signed ID-token validation. Credentials
@@ -93,7 +143,7 @@ version buffers a completed response instead of rendering token-by-token.
   to the model and execute without approval**, with the server's own permissions.
   Use a least-privilege MCP server and avoid exposing destructive or sensitive
   tools you do not want the model to call autonomously.
-- No history persistence, compaction, automatic retry, background jobs, or
+- No server-side history persistence, compaction, automatic retry, background jobs, or
   parallel tool execution. Long conversations eventually hit model context limits.
 
 ## Check

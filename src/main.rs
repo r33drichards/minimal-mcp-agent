@@ -1,6 +1,8 @@
 mod agent;
 mod auth;
+mod config;
 mod model;
+mod server;
 
 use anyhow::{Context, Result, bail};
 use rmcp::{
@@ -23,7 +25,7 @@ fn main() -> Result<()> {
         Some("login") => return auth::login(),
         Some("logout") => return auth::logout(),
         Some("models") => {
-            for m in model::models(&auth::access_token()?)? {
+            for m in model::models(&config::chatgpt_token()?)? {
                 println!(
                     "{}\t{}",
                     m["slug"].as_str().unwrap_or(""),
@@ -32,61 +34,68 @@ fn main() -> Result<()> {
             }
             return Ok(());
         }
-        Some("tools") => {}
+        Some("tools" | "serve") => {}
         Some("--help" | "-h") => {
             println!(
-                "minimal-mcp-agent [login|logout|models|tools]\nSet OPENAI_MODEL and MCP_URL, then run with no arguments.\nOptional MCP_TOKEN: bearer token for your MCP server (not your ChatGPT token).\nTool calls execute automatically; /quit exits."
+                "minimal-mcp-agent [login|logout|models|tools|serve]\nSet OPENAI_MODEL and MCP_URL, then run with no arguments.\nOptional MCP_TOKEN: bearer token for your MCP server (not your ChatGPT token).\nTool calls execute automatically; /quit exits."
             );
             return Ok(());
         }
         Some(other) => bail!("Unknown command: {other}"),
         None => {}
     }
-    let url = env::var("MCP_URL").context("Set MCP_URL to a Streamable HTTP endpoint")?;
-    let parsed = reqwest::Url::parse(&url)?;
-    if parsed.scheme() != "https"
-        && !(parsed.scheme() == "http"
-            && matches!(parsed.host_str(), Some("localhost" | "127.0.0.1" | "[::1]")))
-    {
-        bail!("MCP_URL must use HTTPS, or HTTP on loopback for local development");
+    let hosted = env::args().nth(1).as_deref() == Some("serve");
+    if hosted {
+        server::validate_environment()?;
     }
-    if !parsed.username().is_empty() || parsed.password().is_some() {
-        bail!("Do not put credentials in MCP_URL");
-    }
+    let servers = config::mcp_servers()?;
     let runtime = tokio::runtime::Runtime::new()?;
     let client = reqwest::Client::builder()
         .redirect(reqwest::redirect::Policy::none())
         .build()?;
-    let mut config = StreamableHttpClientTransportConfig::with_uri(url);
-    if let Ok(token) = env::var("MCP_TOKEN") {
-        config = config.auth_header(format!("Bearer {token}"));
-    }
-    let mcp = runtime.block_on(async {
-        tokio::time::timeout(
-            Duration::from_secs(30),
-            ().serve_with_lifecycle(
-                StreamableHttpClientTransport::with_client(client, config),
-                ClientLifecycleMode::Auto {
-                    preferred_versions: vec![ProtocolVersion::LATEST],
-                    legacy_version: Some(ProtocolVersion::LATEST_WITH_INITIALIZE),
-                },
-            ),
-        )
-        .await
-    })??;
-    let discovered = runtime.block_on(async {
-        tokio::time::timeout(Duration::from_secs(30), mcp.list_all_tools()).await
-    })??;
-    if env::args().nth(1).as_deref() == Some("tools") {
-        for tool in &discovered {
-            println!("{}", tool.name);
+    let mut connections = Vec::new();
+    let mut discovered = Vec::new();
+    for (server_index, server) in servers.iter().enumerate() {
+        let mut transport_config =
+            StreamableHttpClientTransportConfig::with_uri(server.url.clone());
+        if let Some(header) = config::bearer(server)? {
+            transport_config = transport_config.auth_header(header);
         }
-        runtime.block_on(mcp.cancel())?;
+        let mcp = runtime.block_on(async {
+            tokio::time::timeout(
+                Duration::from_secs(30),
+                ().serve_with_lifecycle(
+                    StreamableHttpClientTransport::with_client(client.clone(), transport_config),
+                    ClientLifecycleMode::Auto {
+                        preferred_versions: vec![ProtocolVersion::LATEST],
+                        legacy_version: Some(ProtocolVersion::LATEST_WITH_INITIALIZE),
+                    },
+                ),
+            )
+            .await
+        })??;
+        let tools = runtime.block_on(async {
+            tokio::time::timeout(Duration::from_secs(30), mcp.list_all_tools()).await
+        })??;
+        discovered.extend(tools.into_iter().map(|tool| (server_index, tool)));
+        connections.push(mcp);
+    }
+    if env::args().nth(1).as_deref() == Some("tools") {
+        for (server_index, tool) in &discovered {
+            if servers.len() == 1 {
+                println!("{}", tool.name);
+            } else {
+                println!("{}: {}", servers[*server_index].name, tool.name);
+            }
+        }
+        for mcp in connections {
+            runtime.block_on(mcp.cancel())?;
+        }
         return Ok(());
     }
     let selected = env::var("OPENAI_MODEL")
         .context("Set OPENAI_MODEL (run `minimal-mcp-agent models` to list choices)")?;
-    let token = auth::access_token()?;
+    let token = config::chatgpt_token()?;
     if !model::models(&token)?.iter().any(|m| m["slug"] == selected) {
         bail!("OPENAI_MODEL is not listed for this account");
     }
@@ -96,38 +105,29 @@ fn main() -> Result<()> {
         .enumerate()
         .map(|(i, tool)| (format!("mcp_{i}"), tool))
         .collect();
-    let definitions: Vec<_> = registry.iter().map(|(alias, tool)|json!({
-        "type":"function", "name":alias, "description":format!("{}: {}", tool.name, tool.description.as_deref().unwrap_or("")),
+    let definitions: Vec<_> = registry.iter().map(|(alias, (server_index, tool))|json!({
+        "type":"function", "name":alias, "description":format!("{}/{}: {}", servers[*server_index].name, tool.name, tool.description.as_deref().unwrap_or("")),
         "parameters":tool.input_schema, "strict":false })).collect();
-    println!(
-        "Connected: {} MCP tools. /quit exits. Tool calls execute automatically.",
-        registry.len()
-    );
-    let mut messages = vec![];
-    while let Some(input) = read_line("You: ")? {
-        if input == "/quit" {
-            break;
-        }
-        if input.is_empty() {
-            continue;
-        }
-        let result = agent::run_turn(
-            &mut messages,
-            &input,
+    let mut run = |input: &str, messages: &mut Vec<Value>| -> Result<()> {
+        agent::run_turn(
+            messages,
+            input,
             20,
-            |messages| model::prompt(&auth::access_token()?, &selected, messages, &definitions),
+            |messages| model::prompt(&config::chatgpt_token()?, &selected, messages, &definitions),
             |alias, args| {
-                let tool = registry.get(alias).context("Unknown MCP tool")?;
+                let (server_index, tool) = registry.get(alias).context("Unknown MCP tool")?;
                 let args: Value = serde_json::from_str(args).context("Invalid tool arguments")?;
                 let arguments = args
                     .as_object()
                     .context("Tool arguments must be an object")?
                     .clone();
-                println!("Tool: {}\nArguments: {}", tool.name, args);
+                if !hosted {
+                    println!("Tool: {}\nArguments: {}", tool.name, args);
+                }
                 let result = runtime.block_on(async {
                     tokio::time::timeout(
                         Duration::from_secs(120),
-                        mcp.call_tool(
+                        connections[*server_index].call_tool(
                             CallToolRequestParams::new(tool.name.to_string())
                                 .with_arguments(arguments),
                         ),
@@ -136,13 +136,36 @@ fn main() -> Result<()> {
                 })??;
                 Ok(serde_json::to_value(result)?)
             },
-            |text| println!("Agent: {text}"),
+            |text| {
+                if !hosted {
+                    println!("Agent: {text}");
+                }
+            },
+        )
+    };
+    if hosted {
+        server::serve(&mut run)?;
+    } else {
+        println!(
+            "Connected: {} MCP tools. /quit exits. Tool calls execute automatically.",
+            registry.len()
         );
-        if let Err(error) = result {
-            eprintln!("Error: {error}");
+        let mut messages = vec![];
+        while let Some(input) = read_line("You: ")? {
+            if input == "/quit" {
+                break;
+            }
+            if input.is_empty() {
+                continue;
+            }
+            if let Err(error) = run(&input, &mut messages) {
+                eprintln!("Error: {error}");
+            }
         }
     }
-    runtime.block_on(mcp.cancel())?;
+    for mcp in connections {
+        runtime.block_on(mcp.cancel())?;
+    }
     Ok(())
 }
 

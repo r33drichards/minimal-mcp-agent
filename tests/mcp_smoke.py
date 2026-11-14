@@ -54,6 +54,7 @@ server = ThreadingHTTPServer(('127.0.0.1', 0), MCP)
 threading.Thread(target=server.serve_forever, daemon=True).start()
 env = dict(os.environ, MCP_URL=f'http://127.0.0.1:{server.server_port}/mcp')
 env.pop('MCP_TOKEN', None)
+env.pop('MCP_SERVERS_JSON', None)
 try:
     result = subprocess.run(['target/debug/minimal-mcp-agent', 'tools'], env=env,
                             capture_output=True, text=True, timeout=45, check=True)
