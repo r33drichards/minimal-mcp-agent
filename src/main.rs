@@ -1,4 +1,8 @@
-mod agent;
+use minimal_mcp_agent::agent;
+#[cfg(unix)]
+mod auth;
+#[cfg(not(unix))]
+#[path = "auth_headless.rs"]
 mod auth;
 mod config;
 mod model;
@@ -60,6 +64,18 @@ fn main() -> Result<()> {
             StreamableHttpClientTransportConfig::with_uri(server.url.clone());
         if let Some(header) = config::bearer(server)? {
             transport_config = transport_config.auth_header(header);
+        }
+        if let Some(key) = &server.session_id_env {
+            let session =
+                env::var(key).with_context(|| format!("Missing session ID variable {key}"))?;
+            if session.is_empty() {
+                bail!("MCP session ID must not be empty");
+            }
+            transport_config.custom_headers.insert(
+                reqwest::header::HeaderName::from_static("x-mcp-session-id"),
+                reqwest::header::HeaderValue::from_str(&session)
+                    .context("Invalid MCP session ID")?,
+            );
         }
         let mcp = runtime.block_on(async {
             tokio::time::timeout(

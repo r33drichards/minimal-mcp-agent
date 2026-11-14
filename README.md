@@ -164,3 +164,22 @@ and real model inference require your own browser sign-in and eligible plan.
 - [Sign in with ChatGPT: registration](https://developers.openai.com/siwc/token-sharing-open-source/sign-in)
 - [ChatGPT plan models and inference](https://developers.openai.com/siwc/token-sharing-open-source/models-and-inference)
 - [Official Rust MCP SDK](https://github.com/modelcontextprotocol/rust-sdk)
+
+## mcp-js
+
+Point `MCP_URL` at mcp-js's Streamable HTTP **`/mcp`** endpoint, not its REST
+`/api/exec` endpoint. If mcp-js has `JWKS_URL` configured, use `MCP_TOKEN` for a
+JWT from that issuer. The runner sends exactly one `Authorization: Bearer`
+prefix; mcp-js verifies requests against its configured JWKS. mcp-js itself is
+not the OAuth token issuer, so obtain/refresh the token with your identity provider.
+
+For a stateful JS heap/filesystem, set `MCP_SESSION_ID`. It becomes the
+`X-MCP-Session-Id` header, distinct from the MCP protocol's transport session.
+With multiple servers, use `session_id_env` beside `token_env` in each
+`MCP_SERVERS_JSON` entry. A configured logical session is shared by this runner's
+turns; run separate instances/session IDs when you need isolated workspaces.
+
+See [WASIX build and deployment](BUILD.md) and [durable hooks](docs/durability.md).
+The durable API is opt-in: the reference MemoryBackend demonstrates ordering,
+not crash-persistent storage. The CLI and hosted HTTP handler still use the
+ordinary ephemeral loop until a real backend is selected and wired in.
