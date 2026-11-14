@@ -63,3 +63,33 @@ HTTP payload requires stable `session_id` and `request_id`, not client messages.
 
 The MySQL integration suite is tested on a disposable MySQL 8.4 fixture, both
 natively and under Wasmer. This does not provision or validate a production DB.
+
+## GitHub Actions pipeline
+
+`.github/workflows/wasmer.yml` runs native checks, disposable MySQL 8.4
+transaction/recovery tests, a MySQL-enabled WASIX release build, authenticated
+local MCP discovery, and package validation. Pull requests only test/build.
+Pushes to `main` and **Run workflow** on `main` deploy the tested artifact to
+existing app `da_nBBIbtXUDZZG`; deployment runs are serialized and never cancelled
+mid-deploy. Other branches cannot deploy.
+
+Create the GitHub `production` environment secret `WASMER_TOKEN` with a newly
+rotated Wasmer deployment token. Do not reuse a token exposed in previous CLI
+logs. Runtime secrets stay in the existing Wasmer app; CI does not copy or log
+them, run production database migrations, or make model/tool calls. Provision
+runtime configuration listed above separately. MySQL remains opt-in; CI's
+MySQL service is disposable and unrelated to production. The CI transaction
+suite does not replace the separately documented verified-TLS integration test.
+
+The artifact includes its commit and SHA-256 manifest. `/health` reports the
+compiled `AGENT_COMMIT_SHA` (`unknown` outside CI unless set at build time).
+Deployment only succeeds after both the version URL and live app route report
+the exact tested commit, and unauthenticated `/turn` returns 401. A package
+upload alone cannot pass this gate. CLI output is captured and withheld because
+it can contain secret-bearing app configuration; inspect the Wasmer dashboard
+for deployment failures. Authorized real turns still require valid model/MCP
+credentials and are not implied by a green health check.
+
+Tool installation follows the official [cargo-wasix action](https://github.com/wasix-org/cargo-wasix/blob/v0.1.34/action.yml),
+[Wasmer release installer](https://github.com/wasmerio/wasmer/releases/tag/v7.5.0),
+and [WASI SDK release](https://github.com/WebAssembly/wasi-sdk/releases/tag/wasi-sdk-34).

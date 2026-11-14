@@ -83,7 +83,11 @@ fn serve_http(mut handle_body: impl FnMut(&[u8]) -> (u16, Value)) -> Result<()> 
     eprintln!("Listening on port {port}; POST /turn requires a bearer token");
     for mut request in server.incoming_requests() {
         if request.method() == &Method::Get && request.url() == "/health" {
-            respond(request, 200, json!({"status":"ok"}));
+            respond(
+                request,
+                200,
+                json!({"status":"ok", "commit": option_env!("AGENT_COMMIT_SHA").unwrap_or("unknown")}),
+            );
             continue;
         }
         // Authenticate before revealing endpoint/method details or reading a body.
