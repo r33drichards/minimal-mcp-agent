@@ -3,6 +3,7 @@
 Prerequisites: cargo-wasix 0.1.34+, official WASI SDK clang, Python3, network access.
 Set CC_wasm32_wasmer_wasi to the WASI SDK clang binary when the host clang lacks WASM.
 """
+import argparse
 import hashlib
 import io
 from pathlib import Path
@@ -10,6 +11,10 @@ import shutil
 import subprocess
 import tarfile
 import urllib.request
+
+parser = argparse.ArgumentParser()
+parser.add_argument('--features', default='')
+args = parser.parse_args()
 
 ROOT = Path(__file__).resolve().parent.parent
 BUILD = ROOT / '.wasix-build'
@@ -21,7 +26,7 @@ PROJECT.mkdir(parents=True, exist_ok=True)
 # Copy only explicitly intended source inputs, never .env, auth stores, .git or targets.
 for name in ['Cargo.toml', 'README.md']:
     shutil.copy2(ROOT / name, PROJECT / name)
-for name in ['src', 'tests']:
+for name in ['src', 'tests', 'migrations']:
     if (PROJECT / name).exists():
         shutil.rmtree(PROJECT / name)
     shutil.copytree(ROOT / name, PROJECT / name)
@@ -53,6 +58,8 @@ lock = ROOT / 'wasix' / 'Cargo.lock'
 if lock.exists():
     shutil.copy2(lock, PROJECT / 'Cargo.lock')
 command = ['cargo', 'wasix', 'build', '--release', '--bin', 'minimal-mcp-agent']
+if args.features:
+    command += ['--features', args.features]
 if lock.exists():
     command += ['--locked']
 subprocess.run(command, cwd=PROJECT, check=True)

@@ -51,3 +51,15 @@ wasmer deploy --owner r33drichards --app-name minimal-mcp-agent
 Check costs/plan before approving any upgrade. A successful package upload is
 not evidence of a healthy app; verify `/health`, unauthorized `/turn` rejection,
 and an authorized real turn after credentials are provisioned.
+
+## Optional MySQL backend
+
+`python3 scripts/build_wasix.py --features mysql-backend` builds the hosted adapter.
+The pinned WASIX registry supplies MySQL 26.0.1+wasix.1; no driver source patch is
+needed. Configure verified TLS DB settings as documented in
+[MYSQL_BACKEND.md](MYSQL_BACKEND.md), run the explicit schema migration, then set
+`DURABLE_BACKEND=mysql`. Do not reuse an unrelated application database. The
+HTTP payload requires stable `session_id` and `request_id`, not client messages.
+
+The MySQL integration suite is tested on a disposable MySQL 8.4 fixture, both
+natively and under Wasmer. This does not provision or validate a production DB.

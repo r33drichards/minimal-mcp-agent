@@ -17,6 +17,7 @@ use rmcp::{
     },
 };
 use serde_json::{Value, json};
+use sha2::{Digest, Sha256};
 use std::{
     collections::BTreeMap,
     env,
@@ -38,10 +39,20 @@ fn main() -> Result<()> {
             }
             return Ok(());
         }
+        Some("migrate") => {
+            #[cfg(feature = "mysql-backend")]
+            {
+                minimal_mcp_agent::durable_mysql::MySqlBackend::from_env()?.migrate()?;
+                println!("MySQL durability schema ready");
+                return Ok(());
+            }
+            #[cfg(not(feature = "mysql-backend"))]
+            bail!("Rebuild with --features mysql-backend to migrate");
+        }
         Some("tools" | "serve") => {}
         Some("--help" | "-h") => {
             println!(
-                "minimal-mcp-agent [login|logout|models|tools|serve]\nSet OPENAI_MODEL and MCP_URL, then run with no arguments.\nOptional MCP_TOKEN: bearer token for your MCP server (not your ChatGPT token).\nTool calls execute automatically; /quit exits."
+                "minimal-mcp-agent [login|logout|models|tools|serve|migrate]\nSet OPENAI_MODEL and MCP_URL, then run with no arguments.\nOptional MCP_TOKEN: bearer token for your MCP server (not your ChatGPT token).\nTool calls execute automatically; /quit exits."
             );
             return Ok(());
         }
@@ -49,6 +60,24 @@ fn main() -> Result<()> {
         None => {}
     }
     let hosted = env::args().nth(1).as_deref() == Some("serve");
+    let durable = match env::var("DURABLE_BACKEND").as_deref() {
+        Ok("mysql") => true,
+        Ok("ephemeral") | Err(env::VarError::NotPresent) => false,
+        _ => bail!("DURABLE_BACKEND must be ephemeral or mysql"),
+    };
+    if durable && !hosted {
+        bail!("DURABLE_BACKEND=mysql requires serve mode with stable session_id/request_id");
+    }
+    #[cfg(not(feature = "mysql-backend"))]
+    if durable {
+        bail!("Rebuild with --features mysql-backend for durable serving");
+    }
+    #[cfg(feature = "mysql-backend")]
+    let backend = if durable {
+        Some(minimal_mcp_agent::durable_mysql::MySqlBackend::from_env()?)
+    } else {
+        None
+    };
     if hosted {
         server::validate_environment()?;
     }
@@ -118,45 +147,67 @@ fn main() -> Result<()> {
     // Stable aliases keep arbitrary MCP names compatible with model tool-name restrictions.
     let registry: BTreeMap<String, _> = discovered
         .into_iter()
-        .enumerate()
-        .map(|(i, tool)| (format!("mcp_{i}"), tool))
+        .map(|tool| (tool_alias(&servers[tool.0].name, &tool.1.name), tool))
         .collect();
     let definitions: Vec<_> = registry.iter().map(|(alias, (server_index, tool))|json!({
         "type":"function", "name":alias, "description":format!("{}/{}: {}", servers[*server_index].name, tool.name, tool.description.as_deref().unwrap_or("")),
         "parameters":tool.input_schema, "strict":false })).collect();
+    let mut prompt_llm = |messages: &[Value]| {
+        model::prompt(&config::chatgpt_token()?, &selected, messages, &definitions)
+    };
+    let mut call_tool = |alias: &str, args: &str| -> Result<Value> {
+        let (server_index, tool) = registry.get(alias).context("Unknown MCP tool")?;
+        let args: Value = serde_json::from_str(args).context("Invalid tool arguments")?;
+        let arguments = args
+            .as_object()
+            .context("Tool arguments must be an object")?
+            .clone();
+        if !hosted {
+            println!("Tool: {}\nArguments: {}", tool.name, args);
+        }
+        let result = runtime.block_on(async {
+            tokio::time::timeout(
+                Duration::from_secs(120),
+                connections[*server_index].call_tool(
+                    CallToolRequestParams::new(tool.name.to_string()).with_arguments(arguments),
+                ),
+            )
+            .await
+        })??;
+        Ok(serde_json::to_value(result)?)
+    };
+    let mut print_text = |text: &str| {
+        if !hosted {
+            println!("Agent: {text}");
+        }
+    };
+    #[cfg(feature = "mysql-backend")]
+    if let Some(backend) = backend {
+        server::serve_durable(|session_id, request_id, input| {
+            minimal_mcp_agent::durable::run_durable_turn(
+                &backend,
+                minimal_mcp_agent::durable::Turn {
+                    session_id,
+                    request_id,
+                    input,
+                    max_rounds: 20,
+                },
+                &mut prompt_llm,
+                &mut call_tool,
+                &mut print_text,
+                &mut |_, _: &agent::Checkpoint| Ok(()),
+            )
+        })?;
+        return Ok(());
+    }
     let mut run = |input: &str, messages: &mut Vec<Value>| -> Result<()> {
         agent::run_turn(
             messages,
             input,
             20,
-            |messages| model::prompt(&config::chatgpt_token()?, &selected, messages, &definitions),
-            |alias, args| {
-                let (server_index, tool) = registry.get(alias).context("Unknown MCP tool")?;
-                let args: Value = serde_json::from_str(args).context("Invalid tool arguments")?;
-                let arguments = args
-                    .as_object()
-                    .context("Tool arguments must be an object")?
-                    .clone();
-                if !hosted {
-                    println!("Tool: {}\nArguments: {}", tool.name, args);
-                }
-                let result = runtime.block_on(async {
-                    tokio::time::timeout(
-                        Duration::from_secs(120),
-                        connections[*server_index].call_tool(
-                            CallToolRequestParams::new(tool.name.to_string())
-                                .with_arguments(arguments),
-                        ),
-                    )
-                    .await
-                })??;
-                Ok(serde_json::to_value(result)?)
-            },
-            |text| {
-                if !hosted {
-                    println!("Agent: {text}");
-                }
-            },
+            &mut prompt_llm,
+            &mut call_tool,
+            &mut print_text,
         )
     };
     if hosted {
@@ -193,4 +244,25 @@ fn read_line(prompt: &str) -> Result<Option<String>> {
         return Ok(None);
     }
     Ok(Some(line.trim_end().to_string()))
+}
+
+fn tool_alias(server: &str, tool: &str) -> String {
+    let mut digest = Sha256::new();
+    digest.update(server.as_bytes());
+    digest.update([0]);
+    digest.update(tool.as_bytes());
+    // Stable across discovery ordering, additions and process restarts.
+    format!("mcp_{:x}", digest.finalize())[..64].to_string()
+}
+
+#[cfg(test)]
+mod tool_identity_tests {
+    use super::tool_alias;
+    #[test]
+    fn aliases_are_stable_namespaced_and_bounded() {
+        assert_eq!(tool_alias("one", "exec"), tool_alias("one", "exec"));
+        assert_ne!(tool_alias("one", "exec"), tool_alias("two", "exec"));
+        assert_ne!(tool_alias("ab", "c"), tool_alias("a", "bc"));
+        assert_eq!(tool_alias("one", &"a".repeat(500)).len(), 64);
+    }
 }

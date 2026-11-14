@@ -3,7 +3,9 @@
 `src/agent.rs` owns the state machine; `src/durable.rs` implements persistence as
 an ordinary `LifecycleHook`. The engine does not know about a database.
 
-The **existing CLI and `/turn` endpoint remain ephemeral**. The durable API is
+The **CLI and default `/turn` endpoint remain ephemeral**. Select the optional
+MySQL HTTP adapter using `DURABLE_BACKEND=mysql`; see [MySQL setup](../MYSQL_BACKEND.md).
+The durable API is
 opt-in and currently ships a `MemoryBackend` reference implementation, not a
 process-persistent storage implementation. It proves ordering, recovery and
 same-process request deduplication without choosing an unsafe hosting backend.
