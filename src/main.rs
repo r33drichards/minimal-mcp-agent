@@ -35,7 +35,7 @@ fn main() -> Result<()> {
         Some("tools") => {}
         Some("--help" | "-h") => {
             println!(
-                "minimal-mcp-agent [login|logout|models|tools]\nSet OPENAI_MODEL and MCP_URL, then run with no arguments.\nOptional MCP_TOKEN: bearer token for your MCP server (not your ChatGPT token).\nEach tool call requires confirmation; /quit exits."
+                "minimal-mcp-agent [login|logout|models|tools]\nSet OPENAI_MODEL and MCP_URL, then run with no arguments.\nOptional MCP_TOKEN: bearer token for your MCP server (not your ChatGPT token).\nTool calls execute automatically; /quit exits."
             );
             return Ok(());
         }
@@ -100,7 +100,7 @@ fn main() -> Result<()> {
         "type":"function", "name":alias, "description":format!("{}: {}", tool.name, tool.description.as_deref().unwrap_or("")),
         "parameters":tool.input_schema, "strict":false })).collect();
     println!(
-        "Connected: {} MCP tools. /quit exits. Tool calls require approval.",
+        "Connected: {} MCP tools. /quit exits. Tool calls execute automatically.",
         registry.len()
     );
     let mut messages = vec![];
@@ -124,9 +124,6 @@ fn main() -> Result<()> {
                     .context("Tool arguments must be an object")?
                     .clone();
                 println!("Tool: {}\nArguments: {}", tool.name, args);
-                if read_line("Allow this call? [y/N] ")?.as_deref() != Some("y") {
-                    bail!("User declined tool call");
-                }
                 let result = runtime.block_on(async {
                     tokio::time::timeout(
                         Duration::from_secs(120),

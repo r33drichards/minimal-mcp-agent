@@ -30,9 +30,9 @@ into the source code. Choose an existing saved account or add another on subsequ
 logins. `logout` revokes the active refresh token and removes its local credentials;
 registration metadata is retained for later sign-in.
 
-Every tool invocation shows its name and arguments and asks `Allow this call?
-[y/N]`. Enter exactly `y` to allow it. `/quit` or EOF exits. Conversation history is
-in memory only; starting a new process starts a new conversation.
+Tool invocations execute automatically, with no per-call approval or human-in-the-loop
+step. Each call logs its name and arguments. `/quit` or EOF exits between turns.
+Conversation history is in memory only; starting a new process starts a new conversation.
 
 ## The loop
 
@@ -46,20 +46,19 @@ for each user input:
         print assistant text
         if no function calls: break
         for each function call:
-            ask the user to approve
-            result = MCP tools/call (or a declined/error result)
+            result = MCP tools/call (or an error result)
             messages += function_call_output with the original call_id
 ```
 
 Multiple calls execute sequentially. Tool errors become results the model can
 reason about. A network/tool timeout is **not retried automatically**: an action
-may already have happened. Check the external system before approving a retry.
+may already have happened. Check the external system before requesting a retry.
 The round limit stops runaway loops after completing the pending result batch.
 
 ## What lives where
 
 - `src/agent.rs`: the loop, provider-independent via closures, and its tests.
-- `src/main.rs`: terminal input, MCP connection/discovery/calls, approval prompts.
+- `src/main.rs`: terminal input and automatic MCP connection/discovery/calls.
 - `src/model.rs`: Responses streaming and account-specific model listing.
 - `src/auth.rs`: OAuth plumbing, separate so the core loop stays easy to read.
 
@@ -90,8 +89,10 @@ version buffers a completed response instead of rendering token-by-token.
   are saved outside the repo under `~/.config/minimal-mcp-agent/`, with owner-only
   permissions and serialized atomic refresh. The file is permission-protected,
   **not encrypted at rest**. Do not sync or share it.
-- No shell/filesystem tools are bundled. MCP tools run with their server's own
-  permissions. Human confirmation is not a substitute for least privilege.
+- No shell/filesystem tools are bundled. **All discovered MCP tools are available
+  to the model and execute without approval**, with the server's own permissions.
+  Use a least-privilege MCP server and avoid exposing destructive or sensitive
+  tools you do not want the model to call autonomously.
 - No history persistence, compaction, automatic retry, background jobs, or
   parallel tool execution. Long conversations eventually hit model context limits.
 

@@ -91,7 +91,7 @@ mod tests {
             },
             |name, _| {
                 if name == "two" {
-                    bail!("denied")
+                    bail!("tool unavailable")
                 }
                 Ok(json!({"value":1}))
             },
@@ -99,7 +99,12 @@ mod tests {
         )
         .unwrap();
         assert_eq!(round, 2);
-        assert!(history[5]["output"].as_str().unwrap().contains("denied"));
+        assert!(
+            history[5]["output"]
+                .as_str()
+                .unwrap()
+                .contains("tool unavailable")
+        );
         assert_eq!(history[1]["encrypted_content"], "opaque");
     }
     #[test]
