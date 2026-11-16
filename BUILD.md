@@ -123,3 +123,29 @@ before deploying, and its tag implementation checks version/hash relationships:
 [deploy source](https://github.com/wasmerio/wasmer/blob/v7.5.0/lib/cli/src/commands/app/deploy.rs),
 [tag source](https://github.com/wasmerio/wasmer/blob/v7.5.0/lib/cli/src/commands/package/tag.rs).
 Do not add `--bump` or change package identity solely on this hypothesis.
+
+
+### Diagnose from the reviewed PR branch without merging
+
+The existing `wasmer.yml` is registered on main. Its diagnostic-branch version
+contains a job gated to this repository, `workflow_dispatch`, and exactly
+`fix/wasmer-safe-diagnostics`. It checks out reviewed implementation commit
+`b9627421723e5c44ba4f152e863aa03cabe43082`, runs its no-network safety tests,
+then invokes only `--diagnose-only`. The secret is scoped to that last step.
+Native/WASIX jobs skip this specific manual diagnostic run; deployment retains
+its unchanged main-only gate and is skipped on the diagnostic branch.
+
+With authenticated GitHub CLI, after verifying the branch head matches the
+reviewed workflow revision:
+
+```sh
+gh workflow run wasmer.yml --ref fix/wasmer-safe-diagnostics --repo r33drichards/minimal-mcp-agent
+```
+
+Alternatively use Actions → Test and deploy Wasmer → Run workflow and choose
+`fix/wasmer-safe-diagnostics` (not main). Do not use the separate diagnostic
+workflow, which is not registered on main yet. Existing production environment
+review/branch restrictions still apply; stop if they block the branch, rather
+than relaxing them. An environment bookkeeping record is not an actual Wasmer
+deployment. This path requires no merge, no disabling auto-deploy, and no copying
+credentials out of GitHub.

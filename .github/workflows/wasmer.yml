@@ -11,6 +11,7 @@ concurrency:
   cancel-in-progress: false
 jobs:
   test:
+    if: github.event_name != 'workflow_dispatch' || github.ref != 'refs/heads/fix/wasmer-safe-diagnostics'
     runs-on: ubuntu-24.04
     timeout-minutes: 25
     services:
@@ -39,6 +40,7 @@ jobs:
         run: cargo test --locked --features mysql-backend --test mysql -- --ignored --skip verified_tls
       - run: cargo build --locked && python3 tests/mcp_smoke.py
   wasix:
+    if: github.event_name != 'workflow_dispatch' || github.ref != 'refs/heads/fix/wasmer-safe-diagnostics'
     runs-on: ubuntu-24.04
     timeout-minutes: 60
     env:
@@ -95,3 +97,29 @@ jobs:
         env:
           WASMER_TOKEN: ${{ secrets.WASMER_TOKEN }}
         run: python3 scripts/deploy_wasmer.py
+
+  diagnose-branch:
+    name: Read-only Wasmer app access
+    if: github.repository == 'r33drichards/minimal-mcp-agent' && github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/fix/wasmer-safe-diagnostics'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    permissions:
+      contents: read
+    environment: production
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          # Reviewed diagnostic implementation; do not execute a moving branch.
+          ref: b9627421723e5c44ba4f152e863aa03cabe43082
+          persist-credentials: false
+      - name: Test diagnostic command boundary
+        run: python3 -m unittest discover -s tests -p "test_deploy_wasmer.py"
+      - name: Install pinned Wasmer
+        run: |
+          curl --fail --silent --show-error --location https://get.wasmer.io -o "$RUNNER_TEMP/install-wasmer.sh"
+          sh "$RUNNER_TEMP/install-wasmer.sh" v7.5.0
+          echo "$HOME/.wasmer/bin" >> "$GITHUB_PATH"
+      - name: Read existing app only
+        env:
+          WASMER_TOKEN: ${{ secrets.WASMER_TOKEN }}
+        run: python3 scripts/deploy_wasmer.py --diagnose-only
