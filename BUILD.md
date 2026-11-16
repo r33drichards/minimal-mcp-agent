@@ -93,3 +93,44 @@ credentials and are not implied by a green health check.
 Tool installation follows the official [cargo-wasix action](https://github.com/wasix-org/cargo-wasix/blob/v0.1.34/action.yml),
 [Wasmer release installer](https://github.com/wasmerio/wasmer/releases/tag/v7.5.0),
 and [WASI SDK release](https://github.com/WebAssembly/wasi-sdk/releases/tag/wasi-sdk-34).
+
+## Credential-safe deployment diagnostics
+
+The deployment wrapper first reads the expected app by ID. It prints only fixed
+stage names, numeric exit codes and allowlisted text-signature labels; raw CLI
+stdout/stderr, app JSON and exception text remain withheld, including on timeouts.
+A signature label is evidence that text matched, not a confirmed root cause.
+Unknown messages produce `unclassified`. The wrapper does not retry failures.
+Timeouts have uncertain outcomes: inspect the app before retrying.
+
+The manual **Read-only Wasmer diagnostics** workflow uses the `production`
+secret and runs `python3 scripts/deploy_wasmer.py --diagnose-only`. It only calls
+`wasmer app get` for the fixed app ID and verifies the returned identity. It does
+not publish, deploy, change app secrets, or call a model/MCP tool. Successful app
+read access does not prove publish/deploy permission or runtime readiness.
+
+Tests run without credentials or network access:
+
+```sh
+python3 -m unittest discover -s tests -p test_deploy_wasmer.py
+```
+
+Attempt 2 of run 43551438316 passed artifact verification and CLI installation,
+then `wasmer deploy` returned nonzero. Its raw output was deliberately not retained,
+so the cause cannot be recovered from that run. A fixed package version collision
+is possible, not established. Wasmer 7.5.0's local-package deploy path publishes
+before deploying, and its tag implementation checks version/hash relationships:
+[deploy source](https://github.com/wasmerio/wasmer/blob/v7.5.0/lib/cli/src/commands/app/deploy.rs),
+[tag source](https://github.com/wasmerio/wasmer/blob/v7.5.0/lib/cli/src/commands/package/tag.rs).
+A subsequent read-only comparison verified a concrete version/content conflict:
+registry `0.1.0` V3 hash `9701044b4cdc8fc3d9ce58c70f1f9fda19e584cc4595af6cdbf3b8c0e0854c64`
+versus original CI artifact repackaged by Wasmer 7.5.0 hash
+`50505873c0b682eefbcaf079407e1654170fa20e5707cdaaf78840c727ae3d38`.
+The source artifact ZIP digest and its embedded commit/WASM checksum were verified.
+This establishes the conflict, not that it was the only cause of attempt 2.
+
+CI now assigns `0.1.0-g<GITHUB_SHA>` in the runner's Wasmer manifest before
+deployment. The source manifest and Rust crate version remain unchanged. Repeating
+the same commit selects the same package version; a different commit uses a new
+version, leaving published `0.1.0` untouched. If an identical commit somehow has
+different package bytes, registry conflict detection still fails closed.
