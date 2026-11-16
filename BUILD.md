@@ -93,3 +93,33 @@ credentials and are not implied by a green health check.
 Tool installation follows the official [cargo-wasix action](https://github.com/wasix-org/cargo-wasix/blob/v0.1.34/action.yml),
 [Wasmer release installer](https://github.com/wasmerio/wasmer/releases/tag/v7.5.0),
 and [WASI SDK release](https://github.com/WebAssembly/wasi-sdk/releases/tag/wasi-sdk-34).
+
+## Credential-safe deployment diagnostics
+
+The deployment wrapper first reads the expected app by ID. It prints only fixed
+stage names, numeric exit codes and allowlisted text-signature labels; raw CLI
+stdout/stderr, app JSON and exception text remain withheld, including on timeouts.
+A signature label is evidence that text matched, not a confirmed root cause.
+Unknown messages produce `unclassified`. The wrapper does not retry failures.
+Timeouts have uncertain outcomes: inspect the app before retrying.
+
+The manual **Read-only Wasmer diagnostics** workflow uses the `production`
+secret and runs `python3 scripts/deploy_wasmer.py --diagnose-only`. It only calls
+`wasmer app get` for the fixed app ID and verifies the returned identity. It does
+not publish, deploy, change app secrets, or call a model/MCP tool. Successful app
+read access does not prove publish/deploy permission or runtime readiness.
+
+Tests run without credentials or network access:
+
+```sh
+python3 -m unittest discover -s tests -p test_deploy_wasmer.py
+```
+
+Attempt 2 of run 43551438316 passed artifact verification and CLI installation,
+then `wasmer deploy` returned nonzero. Its raw output was deliberately not retained,
+so the cause cannot be recovered from that run. A fixed package version collision
+is possible, not established. Wasmer 7.5.0's local-package deploy path publishes
+before deploying, and its tag implementation checks version/hash relationships:
+[deploy source](https://github.com/wasmerio/wasmer/blob/v7.5.0/lib/cli/src/commands/app/deploy.rs),
+[tag source](https://github.com/wasmerio/wasmer/blob/v7.5.0/lib/cli/src/commands/package/tag.rs).
+Do not add `--bump` or change package identity solely on this hypothesis.
