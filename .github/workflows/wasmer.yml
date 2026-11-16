@@ -99,29 +99,30 @@ jobs:
         run: python3 scripts/deploy_wasmer.py
 
   diagnose-branch:
-    name: Read-only Wasmer app access
+    name: Provision authorized runner token
     if: github.repository == 'r33drichards/minimal-mcp-agent' && github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/fix/wasmer-safe-diagnostics'
     runs-on: ubuntu-24.04
-    timeout-minutes: 5
+    timeout-minutes: 8
     permissions:
       contents: read
     environment: production
     steps:
       - uses: actions/checkout@v4
         with:
-          # Reviewed diagnostic implementation; do not execute a moving branch.
-          ref: 30c165dce58ace27f73958fc7249bdacffbe2e64
+          # Reviewed token provisioning implementation; do not execute a moving branch.
+          ref: e37c3d47e7a7c2783632d7344e703eac010ab3d8
           persist-credentials: false
       - name: Test diagnostic command boundary
         run: |
           python3 -m unittest discover -s tests -p "test_deploy_wasmer.py"
           python3 -m unittest discover -s tests -p "test_startup_diagnostics.py"
+          python3 -m unittest discover -s tests -p "test_provision_runner.py"
       - name: Install pinned Wasmer
         run: |
           curl --fail --silent --show-error --location https://get.wasmer.io -o "$RUNNER_TEMP/install-wasmer.sh"
           sh "$RUNNER_TEMP/install-wasmer.sh" v7.5.0
           echo "$HOME/.wasmer/bin" >> "$GITHUB_PATH"
-      - name: Read existing startup logs and health only
+      - name: Create runner secret and apply to current app
         env:
           WASMER_TOKEN: ${{ secrets.WASMER_TOKEN }}
-        run: python3 scripts/diagnose_startup.py
+        run: python3 scripts/provision_runner.py
