@@ -6,23 +6,30 @@ mod auth;
 mod auth;
 mod config;
 mod model;
+#[cfg(feature = "quickjs-tools")]
+mod quickjs_tools;
 mod server;
 
 use anyhow::{Context, Result, bail};
 use rmcp::{
     ClientLifecycleMode, ClientServiceExt,
-    model::{CallToolRequestParams, ProtocolVersion},
+    model::ProtocolVersion,
     transport::{
         StreamableHttpClientTransport, streamable_http_client::StreamableHttpClientTransportConfig,
     },
 };
-use serde_json::{Value, json};
-use sha2::{Digest, Sha256};
+use serde_json::Value;
 use std::{
-    collections::BTreeMap,
     env,
     io::{self, Write},
     time::Duration,
+};
+#[cfg(not(feature = "quickjs-tools"))]
+use {
+    rmcp::model::CallToolRequestParams,
+    serde_json::json,
+    sha2::{Digest, Sha256},
+    std::collections::BTreeMap,
 };
 
 fn main() -> Result<()> {
@@ -50,10 +57,14 @@ fn main() -> Result<()> {
             bail!("Rebuild with --features mysql-backend to migrate");
         }
         Some("tools" | "serve") => {}
+        #[cfg(feature = "quickjs-tools")]
+        Some("run-js") => {}
         Some("--help" | "-h") => {
             println!(
                 "minimal-mcp-agent [login|logout|models|tools|serve|migrate]\nSet OPENAI_MODEL and MCP_URL, then run with no arguments.\nOptional MCP_TOKEN: bearer token for your MCP server (not your ChatGPT token).\nTool calls execute automatically; /quit exits."
             );
+            #[cfg(feature = "quickjs-tools")]
+            println!("run-js '<code>' executes JavaScript against the configured MCP servers.");
             return Ok(());
         }
         Some(other) => bail!("Unknown command: {other}"),
@@ -138,6 +149,25 @@ fn main() -> Result<()> {
         }
         return Ok(());
     }
+    #[cfg(feature = "quickjs-tools")]
+    let quickjs = quickjs_tools::QuickJsTools::new(&servers, &discovered, &connections);
+    #[cfg(feature = "quickjs-tools")]
+    if env::args().nth(1).as_deref() == Some("run-js") {
+        let code = env::args()
+            .nth(2)
+            .context("Usage: minimal-mcp-agent run-js '<code>'")?;
+        let arguments = serde_json::json!({"code": code}).to_string();
+        let output = runtime.block_on(quickjs.call("run_js", &arguments, false));
+        drop(quickjs);
+        for mcp in connections {
+            runtime.block_on(mcp.cancel())?;
+        }
+        print!(
+            "{}",
+            output?.as_str().context("Expected run_js text output")?
+        );
+        return Ok(());
+    }
     let selected = env::var("OPENAI_MODEL")
         .context("Set OPENAI_MODEL (run `minimal-mcp-agent models` to list choices)")?;
     let token = config::chatgpt_token()?;
@@ -145,16 +175,21 @@ fn main() -> Result<()> {
         bail!("OPENAI_MODEL is not listed for this account");
     }
     // Stable aliases keep arbitrary MCP names compatible with model tool-name restrictions.
+    #[cfg(not(feature = "quickjs-tools"))]
     let registry: BTreeMap<String, _> = discovered
         .into_iter()
         .map(|tool| (tool_alias(&servers[tool.0].name, &tool.1.name), tool))
         .collect();
+    #[cfg(not(feature = "quickjs-tools"))]
     let definitions: Vec<_> = registry.iter().map(|(alias, (server_index, tool))|json!({
         "type":"function", "name":alias, "description":format!("{}/{}: {}", servers[*server_index].name, tool.name, tool.description.as_deref().unwrap_or("")),
         "parameters":tool.input_schema, "strict":false })).collect();
+    #[cfg(feature = "quickjs-tools")]
+    let definitions = quickjs_tools::QuickJsTools::definitions();
     let mut prompt_llm = |messages: &[Value]| {
         model::prompt(&config::chatgpt_token()?, &selected, messages, &definitions)
     };
+    #[cfg(not(feature = "quickjs-tools"))]
     let mut call_tool = |alias: &str, args: &str| -> Result<Value> {
         let (server_index, tool) = registry.get(alias).context("Unknown MCP tool")?;
         let args: Value = serde_json::from_str(args).context("Invalid tool arguments")?;
@@ -176,6 +211,9 @@ fn main() -> Result<()> {
         })??;
         Ok(serde_json::to_value(result)?)
     };
+    #[cfg(feature = "quickjs-tools")]
+    let mut call_tool =
+        |name: &str, args: &str| runtime.block_on(quickjs.call(name, args, !hosted));
     let mut print_text = |text: &str| {
         if !hosted {
             println!("Agent: {text}");
@@ -215,7 +253,7 @@ fn main() -> Result<()> {
     } else {
         println!(
             "Connected: {} MCP tools. /quit exits. Tool calls execute automatically.",
-            registry.len()
+            definitions.len()
         );
         let mut messages = vec![];
         while let Some(input) = read_line("You: ")? {
@@ -246,6 +284,7 @@ fn read_line(prompt: &str) -> Result<Option<String>> {
     Ok(Some(line.trim_end().to_string()))
 }
 
+#[cfg(not(feature = "quickjs-tools"))]
 fn tool_alias(server: &str, tool: &str) -> String {
     let mut digest = Sha256::new();
     digest.update(server.as_bytes());
@@ -255,7 +294,7 @@ fn tool_alias(server: &str, tool: &str) -> String {
     format!("mcp_{:x}", digest.finalize())[..64].to_string()
 }
 
-#[cfg(test)]
+#[cfg(all(test, not(feature = "quickjs-tools")))]
 mod tool_identity_tests {
     use super::tool_alias;
     #[test]

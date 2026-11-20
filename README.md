@@ -34,6 +34,18 @@ Tool invocations execute automatically, with no per-call approval or human-in-th
 step. Each call logs its name and arguments. `/quit` or EOF exits between turns.
 Conversation history is in memory only; starting a new process starts a new conversation.
 
+## JavaScript tool calls on Wasmer
+
+The WASIX build exposes `run_js` as the model's function tool. The agent runs
+each script in a fresh QuickJS-NG context. Use `mcp.listTools()` to discover
+configured MCP tools, `await mcp.callTool(server, name, args)` to call them, and
+`console.log` to return results. The Rust agent supplies the MCP connections
+and applies the existing server authentication and session configuration.
+
+For local verification, `cargo build --locked --features quickjs-tools`
+selects the same backend on native builds. The `run-js '<code>'` command
+exercises it without model authentication.
+
 ## Multiple OAuth-protected HTTP MCP servers
 
 Configure endpoint names and **environment variable names**, never inline tokens:
