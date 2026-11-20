@@ -30,14 +30,14 @@ jobs:
           components: rustfmt, clippy
       - run: python3 -m unittest discover -s tests -p "test_deploy_wasmer.py"
       - run: cargo fmt --check
-      - run: cargo test --locked
-      - run: cargo test --locked --features mysql-backend
-      - run: cargo clippy --locked --all-targets --features mysql-backend -- -D warnings
+      - run: cargo test --locked --no-default-features --features direct-mcp
+      - run: cargo test --locked --no-default-features --features direct-mcp,mysql-backend
+      - run: cargo clippy --locked --all-targets --no-default-features --features direct-mcp,mysql-backend -- -D warnings
       - name: Real MySQL transactions, fencing and recovery
         env:
           MYSQL_TEST_URL: mysql://root:local-ci-only@127.0.0.1:3306/agent_test
-        run: cargo test --locked --features mysql-backend --test mysql -- --ignored --skip verified_tls
-      - run: cargo build --locked && python3 tests/mcp_smoke.py
+        run: cargo test --locked --no-default-features --features direct-mcp,mysql-backend --test mysql -- --ignored --skip verified_tls
+      - run: cargo build --locked --no-default-features --features direct-mcp && python3 tests/mcp_smoke.py
   wasix:
     runs-on: ubuntu-24.04
     timeout-minutes: 60

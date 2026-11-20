@@ -41,6 +41,9 @@ class MCP(BaseHTTPRequestHandler):
                                  'inputSchema': {'type': 'object', 'properties': {}}}]}
             if not second:
                 result['nextCursor'] = 'page2'
+        elif method == 'tools/call':
+            name = request['params']['name']
+            result = {'content': [{'type': 'text', 'text': {'first': '19', 'second': '23'}[name]}]}
         response = {'jsonrpc': '2.0', 'id': request['id']}
         if result is None:
             response['error'] = {'code': -32601, 'message': 'Method not found'}
@@ -61,6 +64,27 @@ env['MCP_SESSION_ID'] = 'test-session'
 env.pop('MCP_SERVERS_JSON', None)
 try:
     command = ['target/debug/minimal-mcp-agent', 'tools']
+    if sys.argv[1:] == ['--engine']:
+        script = """
+const tools = mcp.listTools("default");
+if (tools.map(tool => tool.name).sort().join(",") !== "first,second") {
+  throw new Error("Expected both tools from paginated discovery");
+}
+const [a, b] = await Promise.all([
+  mcp.callTool("default", "first", {}),
+  mcp.callTool("default", "second", {}),
+]);
+console.log(Number(a.content[0].text) + Number(b.content[0].text));
+"""
+        result = subprocess.run(
+            ['target/debug/minimal-mcp-agent', 'run-js', script],
+            env=env, capture_output=True, text=True, timeout=45,
+        )
+        assert result.returncode == 0, result.stderr
+        assert json.loads(result.stdout) == 42, result.stdout
+        assert seen.count('tools/call') == 2, seen
+        print('PASS: embedded JavaScript composed two upstream MCP calls')
+        sys.exit(0)
     if len(sys.argv) == 3 and sys.argv[1] == '--wasmer':
         command = [os.environ.get('WASMER_BIN', 'wasmer'), 'run', sys.argv[2], '--net', '--env', 'MCP_URL='+env['MCP_URL'], '--env', 'MCP_TOKEN='+env['MCP_TOKEN'], '--env', 'MCP_SESSION_ID='+env['MCP_SESSION_ID'], '--', 'tools']
     result = subprocess.run(command, env=env,

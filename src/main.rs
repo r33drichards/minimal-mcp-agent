@@ -5,28 +5,28 @@ mod auth;
 #[path = "auth_headless.rs"]
 mod auth;
 mod config;
+#[cfg(feature = "embedded-engine")]
+#[path = "engine_tools.rs"]
+mod mcp_tools;
+#[cfg(not(feature = "embedded-engine"))]
+mod mcp_tools;
 mod model;
 mod server;
 
 use anyhow::{Context, Result, bail};
-use rmcp::{
-    ClientLifecycleMode, ClientServiceExt,
-    model::{CallToolRequestParams, ProtocolVersion},
-    transport::{
-        StreamableHttpClientTransport, streamable_http_client::StreamableHttpClientTransportConfig,
-    },
-};
-use serde_json::{Value, json};
-use sha2::{Digest, Sha256};
+use mcp_tools::McpTools;
+use serde_json::Value;
 use std::{
-    collections::BTreeMap,
     env,
     io::{self, Write},
-    time::Duration,
 };
 
+#[cfg(not(any(feature = "embedded-engine", feature = "direct-mcp")))]
+compile_error!("Enable embedded-engine or direct-mcp");
+
 fn main() -> Result<()> {
-    match env::args().nth(1).as_deref() {
+    let command = env::args().nth(1);
+    match command.as_deref() {
         Some("login") => return auth::login(),
         Some("logout") => return auth::logout(),
         Some("models") => {
@@ -50,16 +50,20 @@ fn main() -> Result<()> {
             bail!("Rebuild with --features mysql-backend to migrate");
         }
         Some("tools" | "serve") => {}
+        #[cfg(feature = "embedded-engine")]
+        Some("run-js") => {}
         Some("--help" | "-h") => {
             println!(
                 "minimal-mcp-agent [login|logout|models|tools|serve|migrate]\nSet OPENAI_MODEL and MCP_URL, then run with no arguments.\nOptional MCP_TOKEN: bearer token for your MCP server (not your ChatGPT token).\nTool calls execute automatically; /quit exits."
             );
+            #[cfg(feature = "embedded-engine")]
+            println!("run-js '<code>' runs JavaScript locally without a model call.");
             return Ok(());
         }
         Some(other) => bail!("Unknown command: {other}"),
         None => {}
     }
-    let hosted = env::args().nth(1).as_deref() == Some("serve");
+    let hosted = command.as_deref() == Some("serve");
     let durable = match env::var("DURABLE_BACKEND").as_deref() {
         Ok("mysql") => true,
         Ok("ephemeral") | Err(env::VarError::NotPresent) => false,
@@ -83,59 +87,30 @@ fn main() -> Result<()> {
     }
     let servers = config::mcp_servers()?;
     let runtime = tokio::runtime::Runtime::new()?;
-    let client = reqwest::Client::builder()
-        .redirect(reqwest::redirect::Policy::none())
-        .build()?;
-    let mut connections = Vec::new();
-    let mut discovered = Vec::new();
-    for (server_index, server) in servers.iter().enumerate() {
-        let mut transport_config =
-            StreamableHttpClientTransportConfig::with_uri(server.url.clone());
-        if let Some(header) = config::bearer(server)? {
-            transport_config = transport_config.auth_header(header);
-        }
-        if let Some(key) = &server.session_id_env {
-            let session =
-                env::var(key).with_context(|| format!("Missing session ID variable {key}"))?;
-            if session.is_empty() {
-                bail!("MCP session ID must not be empty");
-            }
-            transport_config.custom_headers.insert(
-                reqwest::header::HeaderName::from_static("x-mcp-session-id"),
-                reqwest::header::HeaderValue::from_str(&session)
-                    .context("Invalid MCP session ID")?,
-            );
-        }
-        let mcp = runtime.block_on(async {
-            tokio::time::timeout(
-                Duration::from_secs(30),
-                ().serve_with_lifecycle(
-                    StreamableHttpClientTransport::with_client(client.clone(), transport_config),
-                    ClientLifecycleMode::Auto {
-                        preferred_versions: vec![ProtocolVersion::LATEST],
-                        legacy_version: Some(ProtocolVersion::LATEST_WITH_INITIALIZE),
-                    },
-                ),
-            )
-            .await
-        })??;
-        let tools = runtime.block_on(async {
-            tokio::time::timeout(Duration::from_secs(30), mcp.list_all_tools()).await
-        })??;
-        discovered.extend(tools.into_iter().map(|tool| (server_index, tool)));
-        connections.push(mcp);
+    let tools = McpTools::connect(&runtime, &servers)?;
+    if command.as_deref() == Some("tools") {
+        tools.list(&servers)?;
+        return tools.close(&runtime);
     }
-    if env::args().nth(1).as_deref() == Some("tools") {
-        for (server_index, tool) in &discovered {
-            if servers.len() == 1 {
-                println!("{}", tool.name);
-            } else {
-                println!("{}: {}", servers[*server_index].name, tool.name);
-            }
-        }
-        for mcp in connections {
-            runtime.block_on(mcp.cancel())?;
-        }
+    #[cfg(feature = "embedded-engine")]
+    if command.as_deref() == Some("run-js") {
+        let code = env::args()
+            .nth(2)
+            .context("Usage: minimal-mcp-agent run-js '<code>'")?;
+        let result = tools.call(
+            &runtime,
+            "run_js",
+            &serde_json::json!({"code": code}).to_string(),
+            true,
+        );
+        tools.close(&runtime)?;
+        println!(
+            "{}",
+            result?
+                .as_str()
+                .context("Expected run_js text output")?
+                .trim_end()
+        );
         return Ok(());
     }
     let selected = env::var("OPENAI_MODEL")
@@ -144,38 +119,11 @@ fn main() -> Result<()> {
     if !model::models(&token)?.iter().any(|m| m["slug"] == selected) {
         bail!("OPENAI_MODEL is not listed for this account");
     }
-    // Stable aliases keep arbitrary MCP names compatible with model tool-name restrictions.
-    let registry: BTreeMap<String, _> = discovered
-        .into_iter()
-        .map(|tool| (tool_alias(&servers[tool.0].name, &tool.1.name), tool))
-        .collect();
-    let definitions: Vec<_> = registry.iter().map(|(alias, (server_index, tool))|json!({
-        "type":"function", "name":alias, "description":format!("{}/{}: {}", servers[*server_index].name, tool.name, tool.description.as_deref().unwrap_or("")),
-        "parameters":tool.input_schema, "strict":false })).collect();
+    let definitions = tools.definitions(&servers);
     let mut prompt_llm = |messages: &[Value]| {
         model::prompt(&config::chatgpt_token()?, &selected, messages, &definitions)
     };
-    let mut call_tool = |alias: &str, args: &str| -> Result<Value> {
-        let (server_index, tool) = registry.get(alias).context("Unknown MCP tool")?;
-        let args: Value = serde_json::from_str(args).context("Invalid tool arguments")?;
-        let arguments = args
-            .as_object()
-            .context("Tool arguments must be an object")?
-            .clone();
-        if !hosted {
-            println!("Tool: {}\nArguments: {}", tool.name, args);
-        }
-        let result = runtime.block_on(async {
-            tokio::time::timeout(
-                Duration::from_secs(120),
-                connections[*server_index].call_tool(
-                    CallToolRequestParams::new(tool.name.to_string()).with_arguments(arguments),
-                ),
-            )
-            .await
-        })??;
-        Ok(serde_json::to_value(result)?)
-    };
+    let mut call_tool = |name: &str, args: &str| tools.call(&runtime, name, args, hosted);
     let mut print_text = |text: &str| {
         if !hosted {
             println!("Agent: {text}");
@@ -198,7 +146,7 @@ fn main() -> Result<()> {
                 &mut |_, _: &agent::Checkpoint| Ok(()),
             )
         })?;
-        return Ok(());
+        return tools.close(&runtime);
     }
     let mut run = |input: &str, messages: &mut Vec<Value>| -> Result<()> {
         agent::run_turn(
@@ -213,10 +161,7 @@ fn main() -> Result<()> {
     if hosted {
         server::serve(&mut run)?;
     } else {
-        println!(
-            "Connected: {} MCP tools. /quit exits. Tool calls execute automatically.",
-            registry.len()
-        );
+        println!("Connected. /quit exits. Tool calls execute automatically.");
         let mut messages = vec![];
         while let Some(input) = read_line("You: ")? {
             if input == "/quit" {
@@ -230,10 +175,7 @@ fn main() -> Result<()> {
             }
         }
     }
-    for mcp in connections {
-        runtime.block_on(mcp.cancel())?;
-    }
-    Ok(())
+    tools.close(&runtime)
 }
 
 fn read_line(prompt: &str) -> Result<Option<String>> {
@@ -244,25 +186,4 @@ fn read_line(prompt: &str) -> Result<Option<String>> {
         return Ok(None);
     }
     Ok(Some(line.trim_end().to_string()))
-}
-
-fn tool_alias(server: &str, tool: &str) -> String {
-    let mut digest = Sha256::new();
-    digest.update(server.as_bytes());
-    digest.update([0]);
-    digest.update(tool.as_bytes());
-    // Stable across discovery ordering, additions and process restarts.
-    format!("mcp_{:x}", digest.finalize())[..64].to_string()
-}
-
-#[cfg(test)]
-mod tool_identity_tests {
-    use super::tool_alias;
-    #[test]
-    fn aliases_are_stable_namespaced_and_bounded() {
-        assert_eq!(tool_alias("one", "exec"), tool_alias("one", "exec"));
-        assert_ne!(tool_alias("one", "exec"), tool_alias("two", "exec"));
-        assert_ne!(tool_alias("ab", "c"), tool_alias("a", "bc"));
-        assert_eq!(tool_alias("one", &"a".repeat(500)).len(), 64);
-    }
 }

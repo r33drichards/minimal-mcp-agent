@@ -15,6 +15,8 @@ import urllib.request
 parser = argparse.ArgumentParser()
 parser.add_argument('--features', default='')
 args = parser.parse_args()
+if 'embedded-engine' in args.features.replace(',', ' ').split():
+    parser.error('embedded-engine requires native V8')
 
 ROOT = Path(__file__).resolve().parent.parent
 BUILD = ROOT / '.wasix-build'
@@ -52,6 +54,13 @@ old = 'reqwest = { version = "0.13", default-features = false, features = ["bloc
 new = 'reqwest = { version = "0.12", default-features = false, features = ["blocking", "json", "rustls-tls", "stream"] }'
 assert old in manifest
 manifest = manifest.replace(old, new)
+# Native V8 dependencies must be absent from the WASIX dependency graph.
+manifest = manifest.replace('default = ["embedded-engine"]', 'default = ["direct-mcp"]')
+manifest = '\n'.join(
+    'embedded-engine = []' if line.startswith('embedded-engine = ') else line
+    for line in manifest.splitlines()
+    if not line.startswith('mcp-v8-uniffi = ')
+) + '\n'
 manifest += '\n[patch.crates-io]\nrmcp = { path = "../rmcp" }\n'
 (PROJECT / 'Cargo.toml').write_text(manifest)
 lock = ROOT / 'wasix' / 'Cargo.lock'

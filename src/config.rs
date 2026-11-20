@@ -89,6 +89,19 @@ pub fn bearer(server: &McpServer) -> Result<Option<String>> {
         .transpose()
 }
 
+pub fn session_id(server: &McpServer) -> Result<Option<String>> {
+    server
+        .session_id_env
+        .as_ref()
+        .map(|key| {
+            let value =
+                env::var(key).with_context(|| format!("Missing session ID variable {key}"))?;
+            ensure!(!value.is_empty(), "MCP session ID must not be empty");
+            Ok(value)
+        })
+        .transpose()
+}
+
 pub fn chatgpt_token() -> Result<String> {
     match env::var("CHATGPT_ACCESS_TOKEN") {
         Ok(token) => {

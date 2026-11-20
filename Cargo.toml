@@ -6,7 +6,9 @@ rust-version = "1.88"
 description = "A small Rust agent loop with MCP tools and Sign in with ChatGPT"
 
 [features]
-default = []
+default = ["embedded-engine"]
+direct-mcp = ["dep:rmcp"]
+embedded-engine = ["dep:mcp-v8-uniffi"]
 mysql-backend = ["dep:mysql", "dep:rustls"]
 
 [dependencies]
@@ -17,7 +19,8 @@ anyhow = "1"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 reqwest = { version = "0.13", default-features = false, features = ["blocking", "json", "rustls", "form"] }
-rmcp = { version = "3.10", default-features = false, features = ["client", "transport-streamable-http-client-reqwest", "reqwest"] }
+mcp-v8-uniffi = { git = "https://github.com/r33drichards/mcp-js", rev = "35ed74d56b689efe20e753865ca11358673041e3", optional = true }
+rmcp = { version = "=3.10.0", optional = true, default-features = false, features = ["client", "transport-streamable-http-client-reqwest", "reqwest"] }
 tokio = { version = "1", features = ["rt-multi-thread", "time"] }
 tiny_http = "0.12"
 
