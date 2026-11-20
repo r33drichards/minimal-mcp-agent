@@ -6,6 +6,7 @@ Set CC_wasm32_wasmer_wasi to the WASI SDK clang binary when the host clang lacks
 import argparse
 import hashlib
 import io
+import os
 from pathlib import Path
 import shutil
 import subprocess
@@ -30,18 +31,49 @@ for name in ['src', 'tests', 'migrations']:
     if (PROJECT / name).exists():
         shutil.rmtree(PROJECT / name)
     shutil.copytree(ROOT / name, PROJECT / name)
-archive = urllib.request.urlopen(f'https://static.crates.io/crates/rmcp/rmcp-{VERSION}.crate', timeout=60).read()
-if hashlib.sha256(archive).hexdigest() != CHECKSUM:
-    raise SystemExit('rmcp crate checksum mismatch; refusing to build')
-if SDK.exists():
-    shutil.rmtree(SDK)
-with tarfile.open(fileobj=io.BytesIO(archive), mode='r:gz') as tar:
-    # Reject paths escaping the fixed versioned crate root (Python 3.9 compatible).
-    for member in tar.getmembers():
-        if member.issym() or member.islnk() or '..' in Path(member.name).parts or not member.name.startswith(f'rmcp-{VERSION}/'):
-            raise SystemExit('Unexpected crate archive entry')
-    tar.extractall(BUILD)
-(BUILD / f'rmcp-{VERSION}').rename(SDK)
+
+
+def unpack_crate(name, version, checksum, destination):
+    root = f'{name}-{version}'
+    url = f'https://static.crates.io/crates/{name}/{root}.crate'
+    with urllib.request.urlopen(url, timeout=60) as response:
+        archive = response.read()
+    if hashlib.sha256(archive).hexdigest() != checksum:
+        raise SystemExit(f'{name} crate checksum mismatch')
+    if destination.exists():
+        shutil.rmtree(destination)
+    source = BUILD / root
+    if source.exists():
+        shutil.rmtree(source)
+    with tarfile.open(fileobj=io.BytesIO(archive), mode='r:gz') as tar:
+        for member in tar.getmembers():
+            if (not (member.isfile() or member.isdir())
+                    or '..' in Path(member.name).parts
+                    or not member.name.startswith(f'{root}/')):
+                raise SystemExit(f'Unexpected {name} crate archive entry')
+        tar.extractall(BUILD)
+    source.rename(destination)
+
+
+unpack_crate('rmcp', VERSION, CHECKSUM, SDK)
+quickjs = BUILD / 'rquickjs-sys'
+unpack_crate('rquickjs-sys', '0.14.0',
+             'cee271d0eeba64f0915b846cb7ae02e16faf3dfdffdca91731101d9d30fe3423',
+             quickjs)
+bindings = quickjs / 'src' / 'bindings'
+shutil.copy2(bindings / 'wasm32-wasip1.rs', bindings / 'wasm32-wasmer-wasi.rs')
+subprocess.run(['patch', '-p1', '-i', str(ROOT / 'wasix/quickjs-probe/wasix-clock.patch')],
+               cwd=quickjs, check=True)
+build_script = quickjs / 'build.rs'
+source = build_script.read_text()
+anchor = '    builder.compile("libquickjs.a");'
+assert source.count(anchor) == 1
+source = source.replace(anchor, '''    if env::var("TARGET").as_deref() == Ok("wasm32-wasmer-wasi") {
+        builder.flag("--target=wasm32-wasip1").define("QUICKJS_WASIX_PROBE", None);
+    }
+''' + anchor)
+build_script.write_text(source)
+
 manifest = (SDK / 'Cargo.toml').read_text()
 assert 'version = "0.13.2"' in manifest
 manifest = manifest.replace('version = "0.13.2"', 'version = "0.12"')
@@ -52,17 +84,17 @@ old = 'reqwest = { version = "0.13", default-features = false, features = ["bloc
 new = 'reqwest = { version = "0.12", default-features = false, features = ["blocking", "json", "rustls-tls", "stream"] }'
 assert old in manifest
 manifest = manifest.replace(old, new)
-manifest += '\n[patch.crates-io]\nrmcp = { path = "../rmcp" }\n'
+manifest += '\n[patch.crates-io]\nrmcp = { path = "../rmcp" }\nrquickjs-sys = { path = "../rquickjs-sys" }\n'
 (PROJECT / 'Cargo.toml').write_text(manifest)
 lock = ROOT / 'wasix' / 'Cargo.lock'
 if lock.exists():
     shutil.copy2(lock, PROJECT / 'Cargo.lock')
 command = ['cargo', 'wasix', 'build', '--release', '--bin', 'minimal-mcp-agent']
-if args.features:
-    command += ['--features', args.features]
+command += ['--features', ','.join(filter(None, ['quickjs-tools', args.features]))]
 if lock.exists():
     command += ['--locked']
-subprocess.run(command, cwd=PROJECT, check=True)
+subprocess.run(command, cwd=PROJECT, check=True,
+               env=dict(os.environ, RQUICKJS_SYS_NO_WASI_SDK='1'))
 (ROOT / 'dist').mkdir(exist_ok=True)
 shutil.copy2(PROJECT / 'target/wasm32-wasmer-wasi/release/minimal-mcp-agent.wasm', ROOT / 'dist/minimal-mcp-agent.wasm')
 if not lock.exists():

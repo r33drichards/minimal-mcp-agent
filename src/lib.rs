@@ -4,3 +4,6 @@ pub mod durable;
 
 #[cfg(feature = "mysql-backend")]
 pub mod durable_mysql;
+
+#[cfg(feature = "quickjs-tools")]
+pub mod quickjs_tools;

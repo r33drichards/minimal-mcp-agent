@@ -34,6 +34,50 @@ Tool invocations execute automatically, with no per-call approval or human-in-th
 step. Each call logs its name and arguments. `/quit` or EOF exits between turns.
 Conversation history is in memory only; starting a new process starts a new conversation.
 
+## JavaScript tool calls on Wasmer
+
+The WASIX build exposes `run_js` as the model's function tool. The agent runs
+each script in a fresh QuickJS-NG context. Use `mcp.listTools()` to discover
+configured MCP tools, `await mcp.callTool(server, name, args)` to call them, and
+`console.log` to return results. The Rust agent supplies the MCP connections
+and applies the existing server authentication and session configuration.
+
+For local verification, `cargo build --locked --features quickjs-tools`
+selects the same backend on native builds. The `run-js '<code>'` command
+exercises it without model authentication.
+
+### Register Rust functions as tools
+
+With the QuickJS backend, add registrations to `register_rust_tools` in
+`src/main.rs` or register directly on `quickjs_tools::QuickJsTools` in a Rust
+embedder. For example, this is the body of a registration hook:
+
+```rust
+tools.register_rust(
+    "increment",
+    "Add one to an integer",
+    serde_json::json!({
+        "type": "object",
+        "properties": {"value": {"type": "integer"}},
+        "required": ["value"]
+    }),
+    |args| {
+        let value = args.get("value").and_then(serde_json::Value::as_i64)
+            .and_then(|value| value.checked_add(1))
+            .ok_or_else(|| anyhow::anyhow!("Expected an incrementable integer"))?;
+        Ok(serde_json::json!({"value": value}))
+    },
+)?;
+Ok(())
+```
+
+JavaScript discovers these functions through `mcp.listTools("rust")` and
+calls them with `await mcp.callTool("rust", "increment", {value: 41})`.
+The return value is available as `result.structuredContent`. Use
+`register_async_rust` for async I/O. Handlers validate their inputs. The agent
+can run with only Rust tools when at least one is registered and no MCP endpoint
+is configured.
+
 ## Multiple OAuth-protected HTTP MCP servers
 
 Configure endpoint names and **environment variable names**, never inline tokens:

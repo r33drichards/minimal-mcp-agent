@@ -4,12 +4,17 @@ The native CLI and the hosted WASIX binary use the same agent loop. Browser OAut
 and Unix credential storage compile only on native Unix. WASIX requires a
 `CHATGPT_ACCESS_TOKEN` supplied through Wasmer Secrets.
 
+The build enables `quickjs-tools` and statically links QuickJS-NG. The overlay
+reuses the 32-bit WASI bindings and applies the clock compatibility patch from
+`wasix/quickjs-probe`. The Wasmer smoke test exercises JavaScript discovery and
+two awaited HTTP MCP calls in the packaged agent.
+
 Verified toolchain: Wasmer 7.5.0, cargo-wasix 0.1.34 (WASIX Rust 1.97), WASI SDK 34.
 Use official installation instructions at https://wasix.org/docs/language-guide/rust/installation
 and https://docs.wasmer.io/runtime/get-started/ .
 
 ```sh
-# If the host clang lacks the WASM target, point this at the official WASI SDK:
+# Use the official WASI SDK compiler for the C dependencies.
 export CC_wasm32_wasmer_wasi=/path/to/wasi-sdk/bin/clang
 python3 scripts/build_wasix.py
 wasmer run dist/minimal-mcp-agent.wasm -- --help
@@ -18,10 +23,9 @@ wasmer package build --check
 ```
 
 The script copies only source inputs into ignored `.wasix-build/`, verifies the
-pinned rmcp 3.10.0 crate archive SHA-256, and changes only its reqwest dependency
-from 0.13 to 0.12 plus the renamed rustls feature. The WASIX registry currently
-provides reqwest 0.12.22+wasix.1, not 0.13. The native Cargo.toml/Cargo.lock stay
-unchanged. `wasix/Cargo.lock` pins the compatibility build. The final artifact is
+pinned rmcp and rquickjs-sys archive checksums, and applies the WASIX patches
+in the overlay. The rmcp patch uses reqwest 0.12.22+wasix.1 from the WASIX
+registry and its corresponding rustls feature. `wasix/Cargo.lock` pins the compatibility build. The final artifact is
 `dist/minimal-mcp-agent.wasm`; neither it nor package output contains credentials.
 
 ## Deployment

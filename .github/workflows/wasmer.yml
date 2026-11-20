@@ -31,6 +31,7 @@ jobs:
       - run: python3 -m unittest discover -s tests -p "test_deploy_wasmer.py"
       - run: cargo fmt --check
       - run: cargo test --locked
+      - run: cargo test --locked --features quickjs-tools
       - run: cargo test --locked --features mysql-backend
       - run: cargo clippy --locked --all-targets --features mysql-backend -- -D warnings
       - name: Real MySQL transactions, fencing and recovery
@@ -60,6 +61,11 @@ jobs:
           echo "CC_wasm32_wasmer_wasi=$RUNNER_TEMP/wasi-sdk-34.0-x86_64-linux/bin/clang" >> "$GITHUB_ENV"
       - run: python3 scripts/build_wasix.py --features mysql-backend
       - run: python3 tests/mcp_smoke.py --wasmer dist/minimal-mcp-agent.wasm
+      - name: Exercise registered Rust tools in Wasmer
+        working-directory: .wasix-build/project
+        env:
+          RQUICKJS_SYS_NO_WASI_SDK: "1"
+        run: cargo wasix test --locked --release --features quickjs-tools,mysql-backend --lib javascript_discovers_and_calls_registered_rust_functions
       - run: wasmer package build --check
       - name: Record artifact provenance
         run: |
