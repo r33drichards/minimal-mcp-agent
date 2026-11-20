@@ -65,7 +65,17 @@ env.pop('MCP_SERVERS_JSON', None)
 try:
     command = ['target/debug/minimal-mcp-agent', 'tools']
     if sys.argv[1:] == ['--engine']:
-        script = 'const [a, b] = await Promise.all([\n  mcp.callTool("default", "first", {}),\n  mcp.callTool("default", "second", {}),\n]);\nNumber(a.content[0].text) + Number(b.content[0].text);'
+        script = """
+const tools = mcp.listTools("default");
+if (tools.map(tool => tool.name).sort().join(",") !== "first,second") {
+  throw new Error("Expected both tools from paginated discovery");
+}
+const [a, b] = await Promise.all([
+  mcp.callTool("default", "first", {}),
+  mcp.callTool("default", "second", {}),
+]);
+console.log(Number(a.content[0].text) + Number(b.content[0].text));
+"""
         result = subprocess.run(
             ['target/debug/minimal-mcp-agent', 'run-js', script],
             env=env, capture_output=True, text=True, timeout=45,

@@ -89,6 +89,24 @@ pub fn bearer(server: &McpServer) -> Result<Option<String>> {
         .transpose()
 }
 
+pub fn session_header(
+    server: &McpServer,
+) -> Result<Option<(reqwest::header::HeaderName, reqwest::header::HeaderValue)>> {
+    use reqwest::header::{HeaderName, HeaderValue};
+    server
+        .session_id_env
+        .as_ref()
+        .map(|key| {
+            let session =
+                env::var(key).with_context(|| format!("Missing session ID variable {key}"))?;
+            ensure!(!session.is_empty(), "MCP session ID must not be empty");
+            let mut value = HeaderValue::from_str(&session).context("Invalid MCP session ID")?;
+            value.set_sensitive(true);
+            Ok((HeaderName::from_static("x-mcp-session-id"), value))
+        })
+        .transpose()
+}
+
 pub fn chatgpt_token() -> Result<String> {
     match env::var("CHATGPT_ACCESS_TOKEN") {
         Ok(token) => {

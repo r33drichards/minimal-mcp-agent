@@ -34,6 +34,16 @@ Tool invocations execute automatically, with no per-call approval or human-in-th
 step. Each call logs its name and arguments. `/quit` or EOF exits between turns.
 Conversation history is in memory only; starting a new process starts a new conversation.
 
+## Embedded JavaScript tool calling
+
+Native Linux and macOS builds embed the JavaScript engine by default.
+The model gets one tool, `run_js`, and can discover and call configured MCP
+tools inside a fresh V8 isolate. Scripts use `console.log` to return output.
+The same MCP server environment variables apply. Run `tools` to inspect the
+upstream catalog or `run-js '<code>'` to exercise the engine without signing in.
+The WASIX build uses the direct MCP backend. To select that backend on native
+builds, use `--no-default-features --features direct-mcp`.
+
 ## Multiple OAuth-protected HTTP MCP servers
 
 Configure endpoint names and **environment variable names**, never inline tokens:
@@ -91,37 +101,36 @@ messages = []
 for each user input:
     messages += user input
     repeat (at most 20 model rounds):
-        output = Responses(messages, discovered MCP tool schemas)
+        output = Responses(messages, tool definitions)
         messages += all output items
         print assistant text
         if no function calls: break
         for each function call:
-            result = MCP tools/call (or an error result)
+            result = run the requested tool (or return an error result)
             messages += function_call_output with the original call_id
 ```
 
-Multiple calls execute sequentially. Tool errors become results the model can
-reason about. A network/tool timeout is **not retried automatically**: an action
+Model tool calls execute sequentially. A JavaScript execution can compose
+multiple upstream MCP calls. Tool errors become results the model can reason about. A network/tool timeout is **not retried automatically**: an action
 may already have happened. Check the external system before requesting a retry.
 The round limit stops runaway loops after completing the pending result batch.
 
 ## What lives where
 
 - `src/agent.rs`: the loop, provider-independent via closures, and its tests.
-- `src/main.rs`: terminal input and automatic MCP connection/discovery/calls.
+- `src/main.rs`: terminal and HTTP entry points.
+- `src/engine_tools.rs`: Engine setup, tool discovery, and JavaScript dispatch.
 - `src/model.rs`: Responses streaming and account-specific model listing.
 - `src/auth.rs`: OAuth plumbing, separate so the core loop stays easy to read.
 
-The official `rmcp` SDK handles Streamable HTTP/SSE, modern protocol discovery,
-legacy initialization fallback, and paginated tool discovery. This starter does
-not launch stdio servers or run MCP OAuth browser/refresh flows; supply already-issued
-OAuth access tokens through secret environment variables. Old two-endpoint HTTP+SSE servers are not supported. Tool schemas are
-loaded at startup; restart after a server's tools change. MCP prompts/resources
-are not loaded automatically.
+Both backends support Streamable HTTP, legacy initialization fallback, and
+paginated discovery. Supply already-issued OAuth access tokens through secret
+environment variables. Tools are discovered at startup. Restart after a
+server's tools change.
 
-MCP tool names are mapped to `mcp_0`, `mcp_1`, etc. for model compatibility, then
-mapped back when invoked. Structured/text MCP results are retained as JSON tool
-output. Images/audio are not converted into model image/audio inputs.
+The direct MCP backend advertises each upstream tool under a stable alias and
+returns the MCP result as JSON. The embedded backend lets JavaScript inspect
+the MCP result and returns console output to the model.
 
 Responses use `store: false`, `stream: true`; full completed output (including
 encrypted reasoning) is preserved before tool results. An interrupted, failed,
@@ -143,8 +152,8 @@ version buffers a completed response instead of rendering token-by-token.
   to the model and execute without approval**, with the server's own permissions.
   Use a least-privilege MCP server and avoid exposing destructive or sensitive
   tools you do not want the model to call autonomously.
-- No server-side history persistence, compaction, automatic retry, background jobs, or
-  parallel tool execution. Long conversations eventually hit model context limits.
+- Ephemeral mode keeps history in memory. Long conversations eventually hit
+  model context limits.
 
 ## Check
 
@@ -153,7 +162,7 @@ cargo fmt --check
 cargo test --locked
 cargo clippy --locked --all-targets -- -D warnings
 cargo build --locked
-python3 tests/mcp_smoke.py
+python3 tests/mcp_smoke.py --engine
 ```
 
 Unit tests use no credentials or paid model requests. End-to-end authentication
