@@ -8,7 +8,9 @@ use serde::Deserialize;
 use serde_json::{Map, Value, json};
 use std::{
     cell::{Cell, RefCell},
-    collections::BTreeMap,
+    collections::{BTreeMap, btree_map::Entry},
+    future::{Future, ready},
+    pin::Pin,
     rc::Rc,
     time::Duration,
 };
@@ -25,41 +27,122 @@ struct RunJs {
     code: String,
 }
 
+type Arguments = Map<String, Value>;
+type RustToolFuture = Pin<Box<dyn Future<Output = Result<Value>>>>;
+type RustToolHandler = dyn Fn(Arguments) -> RustToolFuture;
+
+#[derive(Clone)]
+enum ToolHandler {
+    Mcp(Peer<RoleClient>),
+    Rust(Rc<RustToolHandler>),
+}
+
+const RUST_NAMESPACE: &str = "rust";
+
+/// Tool catalog and dispatch for the QuickJS backend.
+#[derive(Default)]
 pub struct QuickJsTools {
-    catalog: String,
-    peers: Rc<BTreeMap<(String, String), Peer<RoleClient>>>,
+    catalog: Vec<Value>,
+    handlers: Rc<BTreeMap<(String, String), ToolHandler>>,
 }
 
 impl QuickJsTools {
-    pub fn new(
-        servers: &[crate::config::McpServer],
-        tools: &[(usize, rmcp::model::Tool)],
-        connections: &[rmcp::service::RunningService<RoleClient, ()>],
-    ) -> Self {
-        let catalog = tools
-            .iter()
-            .map(|(index, tool)| {
-                json!({
-                    "server": servers[*index].name,
-                    "name": tool.name,
-                    "description": tool.description,
-                    "inputSchema": tool.input_schema,
-                })
-            })
-            .collect::<Vec<_>>();
-        let peers = tools
-            .iter()
-            .map(|(index, tool)| {
-                (
-                    (servers[*index].name.clone(), tool.name.to_string()),
-                    connections[*index].peer().clone(),
-                )
-            })
-            .collect();
-        Self {
-            catalog: json!(catalog).to_string(),
-            peers: Rc::new(peers),
+    /// Register a discovered MCP tool and the connection that serves it.
+    pub fn register_mcp(
+        &mut self,
+        server: &str,
+        tool: &rmcp::model::Tool,
+        peer: Peer<RoleClient>,
+    ) -> Result<()> {
+        self.register(
+            server,
+            &tool.name,
+            json!({
+                "server": server, "name": tool.name,
+                "description": tool.description, "inputSchema": tool.input_schema,
+            }),
+            ToolHandler::Mcp(peer),
+        )
+    }
+
+    /// Register a synchronous in-process function under the `rust` namespace.
+    /// Functions should return promptly. Use `register_async_rust` for async I/O.
+    pub fn register_rust(
+        &mut self,
+        name: &str,
+        description: &str,
+        input_schema: Value,
+        handler: impl Fn(Arguments) -> Result<Value> + 'static,
+    ) -> Result<()> {
+        self.register_async_rust(name, description, input_schema, move |args| {
+            ready(handler(args))
+        })
+    }
+
+    /// Register an async in-process function. Validate untrusted arguments in
+    /// the handler. The schema is advertised to callers for discovery.
+    /// Errors from the handler stop the script's tool dispatch conservatively.
+    pub fn register_async_rust<F>(
+        &mut self,
+        name: &str,
+        description: &str,
+        input_schema: Value,
+        handler: impl Fn(Arguments) -> F + 'static,
+    ) -> Result<()>
+    where
+        F: Future<Output = Result<Value>> + 'static,
+    {
+        ensure!(
+            input_schema.get("type").and_then(Value::as_str) == Some("object"),
+            "Rust tool schema must declare an object"
+        );
+        self.register(
+            RUST_NAMESPACE,
+            name,
+            json!({
+                "server": RUST_NAMESPACE, "name": name,
+                "description": description, "inputSchema": input_schema,
+            }),
+            ToolHandler::Rust(Rc::new(move |args| Box::pin(handler(args)))),
+        )
+    }
+
+    fn register(
+        &mut self,
+        server: &str,
+        name: &str,
+        metadata: Value,
+        handler: ToolHandler,
+    ) -> Result<()> {
+        ensure!(
+            !server.trim().is_empty() && !name.trim().is_empty(),
+            "Tool namespace and name must be nonempty"
+        );
+        if server == RUST_NAMESPACE {
+            let is_rust = matches!(handler, ToolHandler::Rust(_));
+            ensure!(
+                !self.handlers.iter().any(|((namespace, _), registered)| {
+                    namespace == RUST_NAMESPACE
+                        && matches!(registered, ToolHandler::Rust(_)) != is_rust
+                }),
+                "The rust namespace cannot mix Rust tools with an MCP server"
+            );
         }
+        match Rc::make_mut(&mut self.handlers).entry((server.to_owned(), name.to_owned())) {
+            Entry::Occupied(_) => anyhow::bail!("Duplicate tool {server}/{name}"),
+            Entry::Vacant(entry) => {
+                entry.insert(handler);
+            }
+        }
+        self.catalog.push(metadata);
+        Ok(())
+    }
+
+    /// Names of tools registered as in-process Rust functions.
+    pub fn rust_tool_names(&self) -> impl Iterator<Item = &str> {
+        self.handlers.iter().filter_map(|((_, name), handler)| {
+            matches!(handler, ToolHandler::Rust(_)).then_some(name.as_str())
+        })
     }
 
     pub fn definitions() -> Vec<Value> {
@@ -98,41 +181,56 @@ impl QuickJsTools {
         let pending = Rc::new(Cell::new(0usize));
         let uncertain = Rc::new(Cell::new(false));
         let output = Rc::new(RefCell::new(String::new()));
-        let peers = self.peers.clone();
+        let handlers = self.handlers.clone();
         let run = context.async_with(async |ctx| -> Result<()> {
-            let list = ctx.json_parse(self.catalog.as_bytes())?;
+            let list = ctx.json_parse(serde_json::to_vec(&self.catalog)?)?;
             let pending_calls = pending.clone();
             let failed = uncertain.clone();
             let call = Func::from(Async(
                 move |server: String, name: String, arguments: String| {
-                    let peers = peers.clone();
+                    let handlers = handlers.clone();
                     let calls = calls.clone();
                     let pending = pending_calls.clone();
                     let uncertain = failed.clone();
                     async move {
-                        let peer = peers
+                        let handler = handlers
                             .get(&(server, name.clone()))
-                            .ok_or_else(|| js_error("Unknown MCP tool"))?;
+                            .ok_or_else(|| js_error("Unknown tool"))?;
                         let args: Map<String, Value> = serde_json::from_str(&arguments)
-                            .map_err(|_| js_error("MCP arguments must be an object"))?;
+                            .map_err(|_| js_error("Tool arguments must be an object"))?;
                         if uncertain.get() {
-                            return Err(js_error("An earlier MCP call has an unknown outcome"));
+                            return Err(js_error("An earlier tool call has an unknown outcome"));
                         }
                         if calls.get() >= MAX_CALLS || Instant::now() >= deadline {
-                            return Err(js_error("MCP call limit reached"));
+                            return Err(js_error("Tool call limit reached"));
                         }
                         calls.set(calls.get() + 1);
                         pending.set(pending.get() + 1);
-                        let result = peer
-                            .call_tool(CallToolRequestParams::new(name).with_arguments(args))
-                            .await;
+                        let result = match handler {
+                            ToolHandler::Mcp(peer) => match peer
+                                .call_tool(CallToolRequestParams::new(name).with_arguments(args))
+                                .await
+                            {
+                                Ok(result) => serde_json::to_string(&result)
+                                    .map_err(|_| js_error("Cannot encode MCP result")),
+                                Err(_) => {
+                                    uncertain.set(true);
+                                    Err(js_error("MCP call failed with an unknown outcome"))
+                                }
+                            },
+                            ToolHandler::Rust(handler) => match handler(args).await {
+                                Ok(value) => {
+                                    Ok(json!({"content": [], "structuredContent": value})
+                                        .to_string())
+                                }
+                                Err(_) => {
+                                    uncertain.set(true);
+                                    Err(js_error("Rust tool failed"))
+                                }
+                            },
+                        };
                         pending.set(pending.get() - 1);
-                        let result = result.map_err(|_| {
-                            uncertain.set(true);
-                            js_error("MCP call failed with an unknown outcome")
-                        })?;
-                        serde_json::to_string(&result)
-                            .map_err(|_| js_error("Cannot encode MCP result"))
+                        result
                     }
                 },
             ));
@@ -191,13 +289,71 @@ impl QuickJsTools {
         timeout_at(deadline, run)
             .await
             .context("run_js timed out")??;
-        ensure!(pending.get() == 0, "run_js finished with pending MCP calls");
-        ensure!(!uncertain.get(), "An MCP tool call has an unknown outcome");
+        ensure!(
+            pending.get() == 0,
+            "run_js finished with pending tool calls"
+        );
+        ensure!(!uncertain.get(), "A tool call has an unknown outcome");
         let output = output.take();
         Ok(Value::String(output))
     }
 }
 
 fn js_error(message: &str) -> rquickjs::Error {
-    rquickjs::Error::new_from_js_message("script", "MCP bridge", message)
+    rquickjs::Error::new_from_js_message("script", "tool bridge", message)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn javascript_discovers_and_calls_registered_rust_functions() -> Result<()> {
+        let mut tools = QuickJsTools::default();
+        let schema = json!({
+            "type": "object",
+            "properties": {"value": {"type": "integer"}},
+            "required": ["value"]
+        });
+        tools.register_rust("increment", "Add one", schema.clone(), |args| {
+            let value = args
+                .get("value")
+                .and_then(Value::as_i64)
+                .context("Expected integer")?;
+            Ok(json!({"value": value + 1}))
+        })?;
+        tools.register_async_rust(
+            "double",
+            "Multiply by two",
+            schema.clone(),
+            |args| async move {
+                tokio::task::yield_now().await;
+                let value = args
+                    .get("value")
+                    .and_then(Value::as_i64)
+                    .context("Expected integer")?;
+                Ok(json!({"value": value * 2}))
+            },
+        )?;
+        assert!(
+            tools
+                .register_rust("increment", "Duplicate", schema, |_| Ok(Value::Null))
+                .is_err()
+        );
+
+        let code = r#"
+            const names = mcp.listTools("rust").map(tool => tool.name);
+            if (names.join(",") !== "increment,double") throw new Error("Wrong catalog");
+            const first = await mcp.callTool("rust", "increment", {value: 20});
+            const second = await mcp.callTool("rust", "double", first.structuredContent);
+            console.log(second.structuredContent.value);
+        "#;
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()?;
+        let result =
+            runtime.block_on(tools.call("run_js", &json!({"code": code}).to_string(), false))?;
+        assert_eq!(result, json!("42\n"));
+        Ok(())
+    }
 }

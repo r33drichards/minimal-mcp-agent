@@ -7,7 +7,7 @@ mod auth;
 mod config;
 mod model;
 #[cfg(feature = "quickjs-tools")]
-mod quickjs_tools;
+use minimal_mcp_agent::quickjs_tools::QuickJsTools;
 mod server;
 
 use anyhow::{Context, Result, bail};
@@ -92,6 +92,22 @@ fn main() -> Result<()> {
     if hosted {
         server::validate_environment()?;
     }
+    #[cfg(feature = "quickjs-tools")]
+    let mut quickjs = {
+        let mut tools = QuickJsTools::default();
+        register_rust_tools(&mut tools)?;
+        tools
+    };
+    #[cfg(feature = "quickjs-tools")]
+    let servers = if quickjs.rust_tool_names().next().is_some()
+        && env::var_os("MCP_SERVERS_JSON").is_none()
+        && env::var_os("MCP_URL").is_none()
+    {
+        Vec::new()
+    } else {
+        config::mcp_servers()?
+    };
+    #[cfg(not(feature = "quickjs-tools"))]
     let servers = config::mcp_servers()?;
     let runtime = tokio::runtime::Runtime::new()?;
     let client = reqwest::Client::builder()
@@ -133,10 +149,18 @@ fn main() -> Result<()> {
         let tools = runtime.block_on(async {
             tokio::time::timeout(Duration::from_secs(30), mcp.list_all_tools()).await
         })??;
+        #[cfg(feature = "quickjs-tools")]
+        for tool in &tools {
+            quickjs.register_mcp(&server.name, tool, mcp.peer().clone())?;
+        }
         discovered.extend(tools.into_iter().map(|tool| (server_index, tool)));
         connections.push(mcp);
     }
     if env::args().nth(1).as_deref() == Some("tools") {
+        #[cfg(feature = "quickjs-tools")]
+        for tool in quickjs.rust_tool_names() {
+            println!("rust: {tool}");
+        }
         for (server_index, tool) in &discovered {
             if servers.len() == 1 {
                 println!("{}", tool.name);
@@ -149,8 +173,6 @@ fn main() -> Result<()> {
         }
         return Ok(());
     }
-    #[cfg(feature = "quickjs-tools")]
-    let quickjs = quickjs_tools::QuickJsTools::new(&servers, &discovered, &connections);
     #[cfg(feature = "quickjs-tools")]
     if env::args().nth(1).as_deref() == Some("run-js") {
         let code = env::args()
@@ -185,7 +207,7 @@ fn main() -> Result<()> {
         "type":"function", "name":alias, "description":format!("{}/{}: {}", servers[*server_index].name, tool.name, tool.description.as_deref().unwrap_or("")),
         "parameters":tool.input_schema, "strict":false })).collect();
     #[cfg(feature = "quickjs-tools")]
-    let definitions = quickjs_tools::QuickJsTools::definitions();
+    let definitions = QuickJsTools::definitions();
     let mut prompt_llm = |messages: &[Value]| {
         model::prompt(&config::chatgpt_token()?, &selected, messages, &definitions)
     };
@@ -271,6 +293,12 @@ fn main() -> Result<()> {
     for mcp in connections {
         runtime.block_on(mcp.cancel())?;
     }
+    Ok(())
+}
+
+/// Register application-specific Rust tools before opening MCP connections.
+#[cfg(feature = "quickjs-tools")]
+fn register_rust_tools(_tools: &mut QuickJsTools) -> Result<()> {
     Ok(())
 }
 
