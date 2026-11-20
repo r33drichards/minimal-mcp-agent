@@ -36,8 +36,14 @@ impl McpTools {
             if let Some(header) = config::bearer(server)? {
                 transport_config = transport_config.auth_header(header);
             }
-            if let Some((name, value)) = config::session_header(server)? {
-                transport_config.custom_headers.insert(name, value);
+            if let Some(session) = config::session_id(server)? {
+                use reqwest::header::{HeaderName, HeaderValue};
+                let mut value =
+                    HeaderValue::from_str(&session).context("Invalid MCP session ID")?;
+                value.set_sensitive(true);
+                transport_config
+                    .custom_headers
+                    .insert(HeaderName::from_static("x-mcp-session-id"), value);
             }
             let mcp = runtime.block_on(async {
                 tokio::time::timeout(

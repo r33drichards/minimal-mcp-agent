@@ -1158,7 +1158,7 @@ checksum = "e0921b3876b3a1df8a1c9f912e7f94342458022c2e84288015893d83c4d62a79"
 [[package]]
 name = "cli-derive"
 version = "0.1.0"
-source = "git+https://github.com/r33drichards/mcp-js?rev=91314ca3eafebfc0e5fec64b34da3f51ae6a97e3#91314ca3eafebfc0e5fec64b34da3f51ae6a97e3"
+source = "git+https://github.com/r33drichards/mcp-js?rev=35ed74d56b689efe20e753865ca11358673041e3#35ed74d56b689efe20e753865ca11358673041e3"
 dependencies = [
  "proc-macro2",
  "quote",
@@ -3089,7 +3089,7 @@ checksum = "47e1ffaa40ddd1f3ed91f717a33c8c0ee23fff369e3aa8772b9605cc1d22f4c3"
 [[package]]
 name = "mcp-metadata-store"
 version = "0.1.0"
-source = "git+https://github.com/r33drichards/mcp-js?rev=91314ca3eafebfc0e5fec64b34da3f51ae6a97e3#91314ca3eafebfc0e5fec64b34da3f51ae6a97e3"
+source = "git+https://github.com/r33drichards/mcp-js?rev=35ed74d56b689efe20e753865ca11358673041e3#35ed74d56b689efe20e753865ca11358673041e3"
 dependencies = [
  "async-trait",
  "aws-sdk-dynamodb",
@@ -3100,6 +3100,14 @@ dependencies = [
  "sled",
  "tokio",
  "uuid",
+]
+
+[[package]]
+name = "mcp-v8-uniffi"
+version = "0.1.0"
+source = "git+https://github.com/r33drichards/mcp-js?rev=35ed74d56b689efe20e753865ca11358673041e3#35ed74d56b689efe20e753865ca11358673041e3"
+dependencies = [
+ "server",
 ]
 
 [[package]]
@@ -3138,6 +3146,7 @@ dependencies = [
  "base64 0.22.1",
  "fs2",
  "jsonwebtoken",
+ "mcp-v8-uniffi",
  "mysql",
  "rand 0.8.8",
  "reqwest 0.13.5",
@@ -3145,9 +3154,7 @@ dependencies = [
  "rustls 0.23.46",
  "serde",
  "serde_json",
- "server",
  "sha2 0.10.9",
- "tempfile",
  "tiny_http",
  "tokio",
 ]
@@ -4775,7 +4782,7 @@ dependencies = [
 [[package]]
 name = "server"
 version = "0.1.0"
-source = "git+https://github.com/r33drichards/mcp-js?rev=91314ca3eafebfc0e5fec64b34da3f51ae6a97e3#91314ca3eafebfc0e5fec64b34da3f51ae6a97e3"
+source = "git+https://github.com/r33drichards/mcp-js?rev=35ed74d56b689efe20e753865ca11358673041e3#35ed74d56b689efe20e753865ca11358673041e3"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -6390,7 +6397,7 @@ dependencies = [
 [[package]]
 name = "uniffi-builder-derive"
 version = "0.1.0"
-source = "git+https://github.com/r33drichards/mcp-js?rev=91314ca3eafebfc0e5fec64b34da3f51ae6a97e3#91314ca3eafebfc0e5fec64b34da3f51ae6a97e3"
+source = "git+https://github.com/r33drichards/mcp-js?rev=35ed74d56b689efe20e753865ca11358673041e3#35ed74d56b689efe20e753865ca11358673041e3"
 dependencies = [
  "proc-macro2",
  "quote",

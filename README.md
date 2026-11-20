@@ -36,7 +36,7 @@ Conversation history is in memory only; starting a new process starts a new conv
 
 ## Embedded JavaScript tool calling
 
-Native Linux and macOS builds embed the JavaScript engine by default.
+Native Linux and macOS builds embed mcp-js through its `mcp-v8-uniffi` library.
 The model gets one tool, `run_js`, and can discover and call configured MCP
 tools inside a fresh V8 isolate. Scripts use `console.log` to return output.
 The same MCP server environment variables apply. Run `tools` to inspect the

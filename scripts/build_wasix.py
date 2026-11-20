@@ -59,7 +59,7 @@ manifest = manifest.replace('default = ["embedded-engine"]', 'default = ["direct
 manifest = '\n'.join(
     'embedded-engine = []' if line.startswith('embedded-engine = ') else line
     for line in manifest.splitlines()
-    if not line.startswith(('mcp-js = ', 'tempfile = '))
+    if not line.startswith('mcp-v8-uniffi = ')
 ) + '\n'
 manifest += '\n[patch.crates-io]\nrmcp = { path = "../rmcp" }\n'
 (PROJECT / 'Cargo.toml').write_text(manifest)

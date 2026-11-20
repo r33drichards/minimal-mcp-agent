@@ -1,21 +1,15 @@
 use crate::config::{self, McpServer};
 use anyhow::{Context, Result, ensure};
-use mcp_js::engine::{
-    Engine, ExecutionRequest, HardeningConfig,
-    execution::ExecutionRegistry,
-    initialize_v8,
-    mcp_client::{HttpClientOptions, McpClientManager, McpServerConfig, McpServerTransport},
-};
+use mcp_v8_uniffi::{Engine, ExecutionRequest, UpstreamMcpServer};
 use serde::Deserialize;
 use serde_json::{Value, json};
-use std::{collections::HashMap, sync::Arc, time::Duration};
+use std::{sync::Arc, time::Duration};
 use tokio::{runtime::Runtime, time::timeout};
 
 const EXECUTION_LIMIT: Duration = Duration::from_secs(120);
 
 pub struct McpTools {
     engine: Arc<Engine>,
-    _data: tempfile::TempDir,
 }
 
 #[derive(Deserialize)]
@@ -25,67 +19,25 @@ struct RunJs {
 }
 
 impl McpTools {
-    pub fn connect(runtime: &Runtime, servers: &[McpServer]) -> Result<Self> {
-        let client = reqwest::Client::builder()
-            .redirect(reqwest::redirect::Policy::none())
-            .build()?;
-        let mut configs = Vec::with_capacity(servers.len());
-        let mut options = HashMap::with_capacity(servers.len());
-        for server in servers {
-            configs.push(McpServerConfig {
-                name: server.name.clone(),
-                transport: McpServerTransport::Http {
+    pub fn connect(_runtime: &Runtime, servers: &[McpServer]) -> Result<Self> {
+        let upstream = servers
+            .iter()
+            .map(|server| -> Result<UpstreamMcpServer> {
+                Ok(UpstreamMcpServer {
+                    name: server.name.clone(),
                     url: server.url.clone(),
-                },
-                auth: None,
-            });
-            options.insert(
-                server.name.clone(),
-                HttpClientOptions {
-                    client: client.clone(),
                     bearer_token: config::bearer(server)?,
-                    headers: config::session_header(server)?.into_iter().collect(),
-                },
-            );
-        }
-        let manager = runtime
-            .block_on(async {
-                timeout(
-                    Duration::from_secs(30 * servers.len() as u64),
-                    McpClientManager::connect_with_http_options(configs, options),
-                )
-                .await
-            })?
-            .map_err(anyhow::Error::msg)?;
-        initialize_v8();
-        let data = tempfile::tempdir()?;
-        let path = data
-            .path()
-            .to_str()
-            .context("Engine data path must be UTF-8")?;
-        let registry = ExecutionRegistry::new(path).map_err(anyhow::Error::msg)?;
-        let engine = Engine::from_engine(
-            Engine::new_stateless(128 * 1024 * 1024, EXECUTION_LIMIT.as_secs(), 1)
-                .with_hardening(HardeningConfig::all())
-                .with_execution_registry(Arc::new(registry))
-                .with_mcp_client_manager(manager),
-        );
-        Ok(Self {
-            engine,
-            _data: data,
-        })
+                    session_id: config::session_id(server)?,
+                })
+            })
+            .collect::<Result<Vec<_>>>()?;
+        let engine = Engine::create_stateless_with_mcp(128, EXECUTION_LIMIT.as_secs(), upstream)?;
+        Ok(Self { engine })
     }
 
     pub fn list(&self, servers: &[McpServer]) -> Result<()> {
-        let manager = self
-            .engine
-            .mcp_client_manager()
-            .context("Engine MCP manager unavailable")?;
         for server in servers {
-            for tool in manager
-                .list_tools(Some(&server.name))
-                .map_err(anyhow::Error::msg)?
-            {
+            for tool in self.engine.list_upstream_tools(server.name.clone())? {
                 if servers.len() == 1 {
                     println!("{}", tool.name);
                 } else {
@@ -171,8 +123,8 @@ impl McpTools {
         })
     }
 
-    pub fn close(self, runtime: &Runtime) -> Result<()> {
-        runtime.block_on(self.engine.shutdown());
+    pub fn close(self, _runtime: &Runtime) -> Result<()> {
+        self.engine.close()?;
         Ok(())
     }
 }
